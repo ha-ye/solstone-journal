@@ -7685,7 +7685,63 @@
                   "additionalProperties": true,
                   "properties": {
                     "devices": {
-                      "items": {},
+                      "items": {
+                        "additionalProperties": true,
+                        "properties": {
+                          "device_label": {
+                            "type": "string"
+                          },
+                          "display_label": {
+                            "type": "string"
+                          },
+                          "fingerprint": {
+                            "type": "string"
+                          },
+                          "fingerprint_short": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "type": "string"
+                          },
+                          "last_seen_at": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "network": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "observer_handle": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "paired_at": {
+                            "type": "string"
+                          },
+                          "role": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "fingerprint",
+                          "fingerprint_short",
+                          "device_label",
+                          "display_label",
+                          "paired_at",
+                          "last_seen_at",
+                          "role",
+                          "network",
+                          "kind",
+                          "observer_handle"
+                        ],
+                        "type": "object"
+                      },
                       "type": "array"
                     }
                   },
@@ -8543,6 +8599,117 @@
           }
         },
         "summary": "Start private network setup",
+        "tags": [
+          "link"
+        ]
+      }
+    },
+    "/app/network/rename": {
+      "post": {
+        "description": "Persist a home-assigned display label for a paired device.",
+        "operationId": "link.rename",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "example": {
+                "fingerprint": "sha256:4bf5122f344554c53bde2ebb8cd2b7e3...",
+                "label": "Jer iPhone"
+              },
+              "schema": {
+                "additionalProperties": true,
+                "properties": {
+                  "fingerprint": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "fingerprint",
+                  "label"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "device_label": "Jer iPhone",
+                  "display_label": "Jer iPhone",
+                  "fingerprint": "sha256:4bf5122f344554c53bde2ebb8cd2b7e3..."
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "properties": {
+                    "device_label": {
+                      "type": "string"
+                    },
+                    "display_label": {
+                      "type": "string"
+                    },
+                    "fingerprint": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "fingerprint",
+                    "device_label",
+                    "display_label"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Persisted paired-device labels."
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Rename request validation failed.",
+            "x-reason-codes": [
+              "invalid_request_value",
+              "missing_required_field"
+            ]
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Fingerprint is not currently paired.",
+            "x-reason-codes": [
+              "paired_device_not_found"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Rename label persistence failed.",
+            "x-reason-codes": [
+              "convey_operation_failed"
+            ]
+          }
+        },
+        "summary": "Rename a paired link device",
         "tags": [
           "link"
         ]

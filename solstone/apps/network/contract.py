@@ -53,6 +53,38 @@ _REVOKED_OBSERVER_SCHEMA = {
     },
 }
 
+_DEVICE_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "additionalProperties": True,
+        "properties": {
+            "fingerprint": {"type": "string"},
+            "fingerprint_short": {"type": "string"},
+            "device_label": {"type": "string"},
+            "display_label": {"type": "string"},
+            "paired_at": {"type": "string"},
+            "last_seen_at": {"type": ["string", "null"]},
+            "role": {"type": "string"},
+            "network": {"type": ["string", "null"]},
+            "kind": {"type": "string"},
+            "observer_handle": {"type": ["string", "null"]},
+        },
+        "required": [
+            "fingerprint",
+            "fingerprint_short",
+            "device_label",
+            "display_label",
+            "paired_at",
+            "last_seen_at",
+            "role",
+            "network",
+            "kind",
+            "observer_handle",
+        ],
+    },
+}
+
 OPERATIONS: list[OperationSpec] = [
     OperationSpec(
         operation_id="link.pairStart",
@@ -121,7 +153,62 @@ OPERATIONS: list[OperationSpec] = [
             ResponseSpec(
                 status=200,
                 description="Paired devices.",
-                named_fields=(FieldSpec("devices", "array", required=True),),
+                named_fields=(
+                    FieldSpec(
+                        "devices",
+                        "array",
+                        required=True,
+                        raw_schema=_DEVICE_SCHEMA,
+                    ),
+                ),
+            ),
+        ),
+    ),
+    OperationSpec(
+        operation_id="link.rename",
+        method="POST",
+        rule="/app/network/rename",
+        summary="Rename a paired link device",
+        description="Persist a home-assigned display label for a paired device.",
+        request=RequestSpec(
+            fields=(
+                FieldSpec("fingerprint", "string", required=True),
+                FieldSpec("label", "string", required=True),
+            ),
+            example={
+                "fingerprint": "sha256:4bf5122f344554c53bde2ebb8cd2b7e3...",
+                "label": "Jer iPhone",
+            },
+        ),
+        responses=(
+            ResponseSpec(
+                status=200,
+                description="Persisted paired-device labels.",
+                named_fields=(
+                    FieldSpec("fingerprint", "string", required=True),
+                    FieldSpec("device_label", "string", required=True),
+                    FieldSpec("display_label", "string", required=True),
+                ),
+                example={
+                    "fingerprint": "sha256:4bf5122f344554c53bde2ebb8cd2b7e3...",
+                    "device_label": "Jer iPhone",
+                    "display_label": "Jer iPhone",
+                },
+            ),
+            _json_error(
+                400,
+                ("invalid_request_value", "missing_required_field"),
+                "Rename request validation failed.",
+            ),
+            _json_error(
+                404,
+                ("paired_device_not_found",),
+                "Fingerprint is not currently paired.",
+            ),
+            _json_error(
+                500,
+                ("convey_operation_failed",),
+                "Rename label persistence failed.",
             ),
         ),
     ),

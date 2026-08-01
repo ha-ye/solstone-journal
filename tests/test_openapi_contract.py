@@ -402,6 +402,59 @@ def test_named_response_no_drift(contract_app):
     assert allowed <= set(body)
 
 
+def test_link_devices_declares_device_item_schema():
+    document = build_document()
+    schema = _response_schema(document, "link.devices", 200)
+
+    devices = schema["properties"]["devices"]
+    item = devices["items"]
+    expected = {
+        "fingerprint",
+        "fingerprint_short",
+        "device_label",
+        "display_label",
+        "paired_at",
+        "last_seen_at",
+        "role",
+        "network",
+        "kind",
+        "observer_handle",
+    }
+
+    assert item["type"] == "object"
+    assert expected <= set(item["properties"])
+    assert expected <= set(item["required"])
+
+
+def test_link_rename_contract_declares_persisted_response_and_errors():
+    document = build_document()
+    operation = _operation(document, "link.rename")
+    request_schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    response_schema = _response_schema(document, "link.rename", 200)
+
+    assert request_schema["required"] == ["fingerprint", "label"]
+    assert set(response_schema["properties"]) == {
+        "fingerprint",
+        "device_label",
+        "display_label",
+    }
+    assert response_schema["required"] == [
+        "fingerprint",
+        "device_label",
+        "display_label",
+    ]
+    assert operation["responses"]["400"]["x-reason-codes"] == [
+        "invalid_request_value",
+        "missing_required_field",
+    ]
+    assert operation["responses"]["404"]["x-reason-codes"] == [
+        "paired_device_not_found"
+    ]
+    assert operation["responses"]["500"]["x-reason-codes"] == [
+        "convey_operation_failed"
+    ]
+
+
 def test_no_r0_routes_in_artifact():
     document = build_document()
 
