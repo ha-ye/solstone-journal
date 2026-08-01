@@ -155,8 +155,9 @@ where
             None => {
                 let posture_read = deps.read_posture();
                 if posture_read.is_err() {
-                    // Python treats an idle reader failure as `direct`:
-                    // the unsafe choice is to create a new relay listener.
+                    // An idle posture-read failure is treated as `direct`, so the
+                    // listener is NOT opened. This fails closed: opening a relay
+                    // listener on an unreadable posture would defeat the gate.
                     missing_token_noticed = false;
                 }
                 let posture = posture_read.map_or(String::new(), identity);
