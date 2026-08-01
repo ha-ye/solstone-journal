@@ -3,23 +3,10 @@
 
 //! The write half of the frozen split WebSocket transport contract.
 //!
-//! Blob receive owns a [`crate::BufferedWsReader`] over the read half and a
-//! separate `WsByteSink` over the write half. The split is required because
-//! the relay tunnel concurrently carries WebSocket-to-TCP and TCP-to-WebSocket
-//! traffic; it is not a reader escape hatch.
-//!
-//! This replaces `solstone/think/spl/blob_receiver.py:443-452`:
-//!
-//! ```python
-//! async def _send_ready(ws: Any, status: int) -> None:
-//!     await ws.send(_READY_MAGIC + bytes([_VERSION, status]))
-//! async def _close_ws(ws: Any) -> None:
-//!     close = getattr(ws, "close", None)
-//!     if close is not None:
-//!         result = close()
-//!         if hasattr(result, "__await__"):
-//!             await result
-//! ```
+//! The TLS loopback pipe owns a [`crate::BufferedWsReader`] over the read half
+//! and a separate `WsByteSink` over the write half. The split is required
+//! because the relay tunnel concurrently carries WebSocket-to-TCP and
+//! TCP-to-WebSocket traffic; it is not a reader escape hatch.
 
 use std::future::Future;
 

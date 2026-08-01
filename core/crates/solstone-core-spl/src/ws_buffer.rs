@@ -11,7 +11,7 @@ use tokio::time::Instant;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WsClosed;
 
-/// The narrow WebSocket seam shared by tunnel and blob receivers.
+/// The narrow WebSocket seam used by relay tunnel forwarding.
 pub trait WsByteSource {
     fn next_message(&mut self) -> impl Future<Output = Result<Option<Bytes>, WsClosed>> + Send;
 }
