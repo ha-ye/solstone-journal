@@ -12,9 +12,8 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PRE_CUTOVER_COMMIT = "dd04f55c8"
 SURVIVING_SOL_CLI = "solstone/think/sol_cli.py"
 
-# Pre-cutover deletion-owner manifest. `convey_client.py` is intentionally
-# excluded: solstone.think.link.browser_pairing and solstone.think.spl.blob_receiver
-# still import it after the native-sol cutover.
+# Pre-cutover deletion-owner manifest. `convey_client.py` intentionally
+# survives because the OpenAPI contract tests import `resolve_base_url`.
 EXPECTED_BLOBS = {
     "solstone/apps/activities/call.py": "b50d44bfee5b1649bc506c39063fb78234966f95",
     "solstone/apps/awareness/call.py": "c8607807ac37ea9ec596f5a77b9171707ab9b844",

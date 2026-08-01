@@ -9,15 +9,8 @@
 //! must therefore cancel and await the separately-running listen task after
 //! the client has stopped.
 //!
-//! Python replacement, quoted verbatim from `solstone/think/spl/service.py`:
-//!
-//! ```python
-//! async def _stop_client(client: RelayClient, run_task: asyncio.Task[None]) -> None:
-//!     await client.stop()
-//!     run_task.cancel()
-//!     with contextlib.suppress(asyncio.CancelledError):
-//!         await run_task
-//! ```
+//! The native supervisor keeps the same order: stop tunnel work, then cancel
+//! and await the independently-owned listen task.
 
 use std::{error::Error, future::Future};
 

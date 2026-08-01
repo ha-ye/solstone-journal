@@ -90,7 +90,6 @@ pdf = [
 journal-host = [
     "solstone-journal-models==1.0.1",
     "python-dotenv",
-    "pyhpke==0.6.4",
     # Private-link host/runtime helpers: local CA, CSR/cert handling, secure
     # listener pairing, and PL transfer. Public `sol link` caller commands are
     # native.
@@ -101,8 +100,7 @@ journal-host = [
     # Journal mark derivation (`solstone/think/link/mark.py`) remains
     # host/shared, not thin access.
     "argon2-cffi",
-    # SPL relay/browser-pairing and PL tunnel runtime. Native `sol link` owns
-    # caller CLI dispatch.
+    # PL tunnel runtime. Native `sol link` owns caller CLI dispatch.
     "websockets>=13.0",
     "Flask[async]",
     "Markdown",

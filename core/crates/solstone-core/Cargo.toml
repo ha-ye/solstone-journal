@@ -16,7 +16,6 @@ solstone-core-indexer-store.workspace = true
 solstone-core-journal.workspace = true
 solstone-core-sol.workspace = true
 solstone-core-spl.workspace = true
-solstone-core-spl-hpke.workspace = true
 
 [dev-dependencies]
 futures-util = { version = "0.3.33", default-features = false, features = ["std"] }

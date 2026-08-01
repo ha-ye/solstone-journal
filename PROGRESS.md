@@ -88,11 +88,12 @@
   blob-only progress and per-sender APIs are retained temporarily because the still-present U2
   code consumes them; U6 will delete them atomically with U2 rather than introduce temporary
   compatibility code. This is the explicitly permitted retain choice, not a divergence.
-- **U6 scope decisions pending supervisor direction:** deleting the specified `convey_client.py`
-  leaves no production caller but breaks its dedicated test module and the OpenAPI test's
-  `resolve_base_url` import; the redirect also leaves unspecified the final health-only corpus
-  form and the native forwarding path for `journal spl` after Python `sol_cli` dispatch is
-  removed. These are held for direction before destructive U6 work, while U4/U5 continue.
+- **U6 scope decisions resolved by supervisor:** `convey_client.py` and its dedicated tests stay
+  because Schemathesis imports `resolve_base_url`; this is a deliberate narrow exception to the
+  browser removal. The corpus retains only health constants/payloads with a real Rust A11
+  consumer, and `journal spl [-v|-d]` resolves a Python handoff that runs the standard native
+  handshake then `execv`s `solstone-core spl service` in place. These were contract rework,
+  not delegate rejections.
 - The redirected U4 TLS relay client is accepted after fresh-eyes review and independent
   reruns of format, strict clippy, iOS library, and 114 SPL tests. It reconnects and emits the
   retained health vocabulary through a neutral Callosum seam; acquires/releases global
@@ -116,6 +117,15 @@
   an explicit bounded newest-wins policy only when all retained messages are terminal. Focused
   saturation, unmatched-terminal, all-terminal, and wedged-output tests are green alongside
   the independent format, 124-SPL/30-core test, strict-clippy, and iOS-library reruns.
+- **U6 redirected cutover completed:** the browser HPKE/blob receiver and pairing code, Python
+  `think/spl` package, HPKE Rust crate/CLI, old vector generator, browser key material, and
+  `pyhpke` dependency are removed without rewriting their historical commits. The retained
+  pair-window is TLS-only (`0x16`); unknown first bytes close without a browser/blob branch.
+  Health constants and both golden payloads remain in the trimmed corpus and are consumed by
+  a Rust test. `journal spl` preserves its flags and replaces its PID with native `spl service`.
+  Focused Python gate: 108 passed; affected Rust packages: 79 SPL + 25 CLI + 24 core tests,
+  strict clippy, and formatting green. The broad offline workspace test remains blocked only by
+  absent ONNX Runtime linker symbols in unrelated speakers crates.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -201,6 +211,20 @@
   implied otherwise. The delegate must cap every retained structure, retain the newest terminal
   by evicting the oldest telemetry without blocking, and make the overflow record and tests
   truthful. This is a delegate implementation correction, not contract rework.
+- **U6 corpus constants — returned.** Fresh-eyes found that the retained parity-corpus
+  constants were decorative rather than an actual Rust contract consumer. The U6 delegate added
+  the A11 test consumer: it checks the full reason map and event name, uses a `BTreeSet` for the
+  intentionally unordered offline-reason semantics, and retains the all-null/populated payload
+  fixtures. The focused SPL test, strict clippy, and formatter gates pass. This is a delegate
+  implementation omission, not contract rework.
+- **U6 lockfile resolution — returned.** Fresh-eyes caught broad cross-platform marker churn
+  from the installed `uv 0.11.26`. The U6 delegate restored every unrelated `uv.lock` byte and
+  retained only pyhpke's package stanza plus its two root references. The repository-compatible
+  `uv 0.10.0 lock --check` accepts that exact minimal lockfile; `uv 0.11.26` independently
+  reinterprets the existing speaker-analysis workspace source as editable (`unexpected:
+  virtual`) and requests unrelated lock rewriting. The focused 108-test Python gate was rerun
+  under the compatible resolver. This is resolver-version rework, not a product or delegate
+  rejection.
 
 ### Explained twice
 

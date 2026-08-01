@@ -22,7 +22,7 @@ from solstone.think.services import (
     spl_handoff,
     status,
 )
-from solstone.think.spl import relay_client
+from solstone.think.services import spl as relay_client
 from tests.helpers.journal_config import seed_journal_config
 from tests.helpers.module_mocks import inline_thread_constructor, module_mock
 

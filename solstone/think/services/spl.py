@@ -9,6 +9,7 @@ import json
 import logging
 import ssl
 import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
@@ -27,7 +28,6 @@ from solstone.think.link.paths import (
     save_service_token,
 )
 from solstone.think.link.window import read_posture
-from solstone.think.spl.relay_client import enroll_home
 
 log = logging.getLogger(__name__)
 
@@ -51,6 +51,45 @@ class RelayRejectedError(RuntimeError):
 
 class RelayResponseError(RuntimeError):
     """Raised when the spl relay response is malformed."""
+
+
+def _post_json_sync(url: str, body: dict[str, Any]) -> dict[str, Any]:
+    if not url.startswith(("http://", "https://")):
+        raise ValueError(f"unsupported url scheme: {url!r}")
+    req = urllib.request.Request(  # noqa: S310
+        url,
+        data=json.dumps(body).encode(),
+        headers={
+            "content-type": "application/json",
+            "user-agent": "solstone-link/0.1",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:  # noqa: S310
+        parsed = json.loads(resp.read())
+    if not isinstance(parsed, dict):
+        raise RuntimeError("relay returned invalid JSON response")
+    return parsed
+
+
+def enroll_home(
+    relay_endpoint: str,
+    *,
+    instance_id: str,
+    ca_pubkey: str,
+    home_label: str,
+) -> str:
+    """POST the home service identity and return the relay service token."""
+    body = {
+        "instance_id": instance_id,
+        "ca_pubkey": ca_pubkey,
+        "home_label": home_label,
+    }
+    result = _post_json_sync(f"{relay_endpoint.rstrip('/')}/enroll/home", body)
+    token = result.get("service_token") or result.get("account_token")
+    if not isinstance(token, str) or not token:
+        raise RuntimeError("relay returned no service_token")
+    return token
 
 
 @dataclass(frozen=True)

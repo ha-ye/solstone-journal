@@ -111,8 +111,8 @@ from solstone.think.pairing.config import (
 )
 from solstone.think.services import operations, spl, spl_handoff
 from solstone.think.services import status as service_status
-from solstone.think.spl.health import OFFLINE_TUNNEL_REASONS
-from solstone.think.spl.relay_client import start_pair_window
+from solstone.think.link.link_health import OFFLINE_TUNNEL_REASONS
+from solstone.think.link.pair_window import start_pair_window
 from solstone.think.utils import get_journal, now_ms
 
 logger = logging.getLogger(__name__)

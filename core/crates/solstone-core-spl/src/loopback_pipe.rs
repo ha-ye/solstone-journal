@@ -107,7 +107,7 @@ where
                     .map_err(|_| TunnelPipeError::LoopbackWrite)?;
                 return Ok(transferred);
             }
-            Err(WsBufferError::ReadTimeout | WsBufferError::ProgressTimeout) => {
+            Err(WsBufferError::ReadTimeout) => {
                 return Err(TunnelPipeError::WebSocketRead);
             }
         };

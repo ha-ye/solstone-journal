@@ -3,7 +3,7 @@
 
 use std::ffi::{OsStr, OsString};
 
-pub const USAGE: &str = "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n  solstone-core spl service [-v | --verbose] [-d | --debug]\n  solstone-core spl hpke <open-base | seal-base>\n";
+pub const USAGE: &str = "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n  solstone-core spl service [-v | --verbose] [-d | --debug]\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -16,19 +16,12 @@ pub enum Command {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SplCommand {
     Service(ServiceOptions),
-    Hpke(HpkeCommand),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServiceOptions {
     pub verbose: bool,
     pub debug: bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HpkeCommand {
-    OpenBase,
-    SealBase,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,16 +61,6 @@ fn parse_spl(args: &[OsString]) -> Result<SplCommand, UsageError> {
     match args {
         [command, rest @ ..] if command == OsStr::new("service") => {
             parse_service(rest).map(SplCommand::Service)
-        }
-        [command, operation]
-            if command == OsStr::new("hpke") && operation == OsStr::new("open-base") =>
-        {
-            Ok(SplCommand::Hpke(HpkeCommand::OpenBase))
-        }
-        [command, operation]
-            if command == OsStr::new("hpke") && operation == OsStr::new("seal-base") =>
-        {
-            Ok(SplCommand::Hpke(HpkeCommand::SealBase))
         }
         _ => Err(UsageError),
     }
@@ -394,41 +377,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_spl_hpke_flags() {
-        for values in [
-            &["spl", "hpke", "open-base", "-v"][..],
-            &["spl", "hpke", "open-base", "--verbose"][..],
-            &["spl", "hpke", "seal-base", "-d"][..],
-            &["spl", "hpke", "seal-base", "--debug"][..],
-        ] {
-            assert_eq!(evaluate_args(&args(values)), Err(UsageError), "{values:?}");
-        }
-    }
-
-    #[test]
-    fn accepts_spl_hpke_base_operations() {
-        assert_eq!(
-            evaluate_args(&args(&["spl", "hpke", "open-base"])),
-            Ok(Command::Spl(SplCommand::Hpke(HpkeCommand::OpenBase)))
-        );
-        assert_eq!(
-            evaluate_args(&args(&["spl", "hpke", "seal-base"])),
-            Ok(Command::Spl(SplCommand::Hpke(HpkeCommand::SealBase)))
-        );
-    }
-
-    #[test]
     fn rejects_incomplete_unknown_and_extra_spl_args() {
-        for values in [
-            &["spl"][..],
-            &["spl", "hpke"][..],
-            &["spl", "hpke", "unknown"][..],
-            &["spl", "hpke", "open-base", "extra"][..],
-            &["spl", "hpke", "open-base", "open-base"][..],
-            &["spl", "hpke", "seal-base", "extra"][..],
-            &["spl", "hpke", "seal-base", "seal-base"][..],
-            &["spl", "unknown"][..],
-        ] {
+        for values in [&["spl"][..], &["spl", "unknown"][..]] {
             assert_eq!(evaluate_args(&args(values)), Err(UsageError), "{values:?}");
         }
     }
@@ -606,7 +556,7 @@ mod tests {
     fn usage_lists_supported_commands() {
         assert_eq!(
             USAGE,
-            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n  solstone-core spl service [-v | --verbose] [-d | --debug]\n  solstone-core spl hpke <open-base | seal-base>\n"
+            "Usage:\n  solstone-core --version\n  solstone-core journal-path [--journal PATH] [--create]\n  solstone-core indexer [--journal PATH] [--reset] [--rebuild-edges] [--rescan | --rescan-full | --rescan-file PATH]\n  solstone-core spl service [-v | --verbose] [-d | --debug]\n"
         );
     }
 }

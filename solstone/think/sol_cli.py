@@ -158,7 +158,7 @@ COMMANDS: dict[str, Command] = {
     "facet-candidates": Command("solstone.think.facet_candidates_cli", "service"),
     "cortex": Command("solstone.think.cortex", "service"),
     "talent": Command("solstone.think.talent_cli", "service"),
-    "spl": Command("solstone.think.spl", "service"),
+    "spl": Command("solstone.think.spl_native", "service"),
     "navigate": Command("solstone.think.tools.navigate", "service"),
     "identity": Command("solstone.think.tools.sol", "service"),
     "engage": Command("solstone.think.engage", "service"),

@@ -8,12 +8,6 @@
 //! transport implementation shares the same owner-visible behaviour.
 
 mod admission;
-mod authenticated_blob;
-mod authorized_client_ledger;
-mod authorized_clients;
-mod blob_archive;
-mod blob_content_type;
-mod blob_receive;
 mod callosum;
 mod health;
 mod link_state_files;
@@ -30,29 +24,10 @@ mod service_process;
 mod service_shutdown;
 mod service_transition;
 mod tunnel_route;
-mod upload_key_source;
 mod ws_buffer;
 mod ws_sink;
 
-pub use admission::BlobAdmissionGate;
-pub use authenticated_blob::{
-    AuthenticatedBlobError, PreparedAuthenticatedBlob, prepare_authenticated_blob,
-};
-pub use authorized_client_ledger::{AuthorizedClientLedger, BrowserLedgerLookup};
-pub use authorized_clients::{
-    AuthorizedClients, BrowserUploadAuthorization, ClientEntry, LedgerStatus,
-    parse_authorized_clients,
-};
-pub use blob_archive::{
-    BlobArchiveEntry, BlobArchiveError, BlobArchiveMetadata, ValidatedBlobArchive,
-    parse_blob_archive,
-};
-pub use blob_content_type::blob_content_type;
-pub use blob_receive::{
-    BlobDeps, BlobError, BlobIngest, BlobIngestError, BlobIngestFuture, BlobIngestStatus,
-    BlobReceiveTiming, BrowserLedger, KeyError, LedgerError, LedgerRow, UploadKeySource,
-    parse_convey_ingest_status, receive_blob,
-};
+pub use admission::RelayAdmissionGate;
 pub use callosum::CallosumEmit;
 pub use health::{
     LINK_HEALTH_EVENT, OFFLINE_TUNNEL_REASONS, REASON_HOME_MISSING_MOBILE,
@@ -95,6 +70,5 @@ pub use service_transition::{
     PostureObservation, ServiceAction, ServiceLifecycle, TokenObservation, transition,
 };
 pub use tunnel_route::{TunnelRoute, route_tunnel_prefix};
-pub use upload_key_source::JournalUploadKeySource;
 pub use ws_buffer::{BufferedWsReader, WsBufferError, WsByteSource, WsClosed};
 pub use ws_sink::WsByteSink;

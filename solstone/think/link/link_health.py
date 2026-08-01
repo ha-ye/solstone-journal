@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Structured SPL relay health constants."""
+"""Structured relay health constants shared with the link surface."""
 
 REASON_HOME_MISSING_MOBILE = "home_missing_mobile"
 REASON_SERVICE_TOKEN_REJECTED = "service_token_rejected"

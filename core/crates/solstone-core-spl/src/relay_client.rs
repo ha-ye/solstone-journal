@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::{task::JoinSet, time::sleep};
 
 use crate::{
-    BlobAdmissionGate, BufferedWsReader, CallosumEmit, ListenControl, RelayHealth,
+    BufferedWsReader, CallosumEmit, ListenControl, RelayAdmissionGate, RelayHealth,
     RelayHealthState, RelayTunnelFailure, RelayTunnelFailureSignal, RelayWebSocket,
     RelayWebSocketError, ServiceToken, TunnelRoute, WsByteSink, WsByteSource,
     classify_relay_tunnel_failure, pipe_tunnel, relay_tunnel_url, route_tunnel_prefix,
@@ -78,7 +78,7 @@ struct RelayClientInner {
     config: RelayClientConfig,
     emit: Arc<dyn CallosumEmit>,
     dialer: Arc<dyn LoopbackDialer>,
-    admission: Arc<BlobAdmissionGate>,
+    admission: Arc<RelayAdmissionGate>,
     health: Mutex<RelayHealth>,
     accepting_tunnels: AtomicBool,
     disconnect_announced: AtomicBool,
@@ -93,7 +93,7 @@ impl RelayClient {
         emit: Arc<dyn CallosumEmit>,
         dialer: Arc<dyn LoopbackDialer>,
     ) -> Self {
-        let admission = Arc::new(BlobAdmissionGate::new(config.global_admission_ceiling, 0));
+        let admission = Arc::new(RelayAdmissionGate::new(config.global_admission_ceiling));
         Self {
             inner: Arc::new(RelayClientInner {
                 config,
@@ -378,7 +378,7 @@ fn prefix_hex(prefix: &Bytes) -> String {
 }
 
 struct GlobalAdmission {
-    gate: Arc<BlobAdmissionGate>,
+    gate: Arc<RelayAdmissionGate>,
     held: bool,
 }
 
@@ -400,14 +400,13 @@ impl Drop for TunnelLifecycle {
 }
 
 impl GlobalAdmission {
-    fn acquire(gate: Arc<BlobAdmissionGate>) -> Option<Self> {
-        gate.try_acquire_global()
-            .then_some(Self { gate, held: true })
+    fn acquire(gate: Arc<RelayAdmissionGate>) -> Option<Self> {
+        gate.try_acquire().then_some(Self { gate, held: true })
     }
 
     fn release(&mut self) {
         if self.held {
-            self.gate.release_global();
+            self.gate.release();
             self.held = false;
         }
     }
@@ -538,21 +537,21 @@ mod tests {
 
     #[test]
     fn global_admission_releases_on_drop_and_explicit_early_release() {
-        let gate = Arc::new(crate::BlobAdmissionGate::new(1, 0));
+        let gate = Arc::new(crate::RelayAdmissionGate::new(1));
         let mut guard = GlobalAdmission::acquire(Arc::clone(&gate));
         assert!(guard.is_some());
-        assert_eq!(gate.global_count(), 1);
+        assert_eq!(gate.count(), 1);
         if let Some(guard) = guard.as_mut() {
             guard.release();
         }
-        assert_eq!(gate.global_count(), 0);
+        assert_eq!(gate.count(), 0);
         drop(guard);
-        assert_eq!(gate.global_count(), 0);
+        assert_eq!(gate.count(), 0);
 
         let guard = GlobalAdmission::acquire(Arc::clone(&gate));
         assert!(guard.is_some());
         drop(guard);
-        assert_eq!(gate.global_count(), 0);
+        assert_eq!(gate.count(), 0);
     }
 
     #[tokio::test]
@@ -659,7 +658,7 @@ mod tests {
             .await
             .map_err(|_| "loopback read failed".to_owned())?;
         assert_eq!(received, [0x16, 0x03, 0x01, 0x00]);
-        assert_eq!(client.inner.admission.global_count(), 0);
+        assert_eq!(client.inner.admission.count(), 0);
 
         client.stop().await;
         let events_after_stop = emitter.snapshot();
@@ -687,8 +686,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retired_blob_and_arbitrary_prefixes_close_as_the_same_unknown_route()
-    -> Result<(), String> {
+    async fn unsupported_prefixes_close_as_the_same_unknown_route() -> Result<(), String> {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .map_err(|_| "relay bind failed".to_owned())?;
@@ -707,7 +705,7 @@ mod tests {
             let (stream, _) = listener.accept().await.map_err(|_| ())?;
             let mut tunnel = accept_async(stream).await.map_err(|_| ())?;
             tunnel
-                .send(Message::Binary(Bytes::from_static(b"SBO1")))
+                .send(Message::Binary(Bytes::from_static(b"RETI")))
                 .await
                 .map_err(|_| ())?;
             match timeout(Duration::from_secs(2), tunnel.next()).await {
@@ -732,7 +730,7 @@ mod tests {
             .await
             .map_err(|_| "relay server panicked".to_owned())?
             .map_err(|_| "unknown prefix did not close".to_owned())?;
-        assert_eq!(client.inner.admission.global_count(), 0);
+        assert_eq!(client.inner.admission.count(), 0);
         let formatted = {
             let events = match emitter.events.lock() {
                 Ok(events) => events,
@@ -740,7 +738,7 @@ mod tests {
             };
             format!("{events:?}")
         };
-        assert!(formatted.contains("53424f31"));
+        assert!(formatted.contains("52455449"));
         assert!(!formatted.contains("known-service-token"));
 
         client.stop().await;
@@ -799,7 +797,7 @@ mod tests {
                 .map_err(|_| "short-prefix tunnel did not finish".to_owned())?;
             assert!(joined.is_some());
         }
-        assert_eq!(client.inner.admission.global_count(), 0);
+        assert_eq!(client.inner.admission.count(), 0);
         let events = emitter.snapshot();
         assert!(events.contains(&(
             "tunnel_pair".to_owned(),

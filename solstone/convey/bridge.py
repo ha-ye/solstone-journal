@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
 from solstone.think.callosum import CallosumConnection
-from solstone.think.spl.health import LINK_HEALTH_EVENT
+from solstone.think.link.link_health import LINK_HEALTH_EVENT
 
 logger = logging.getLogger(__name__)
 

@@ -44,8 +44,8 @@ mod tests {
     }
 
     #[test]
-    fn treats_the_retired_blob_prefix_as_unsupported() {
-        assert_eq!(route_tunnel_prefix(b"SBO1"), TunnelRoute::Unsupported);
+    fn treats_non_tls_prefixes_as_unsupported() {
+        assert_eq!(route_tunnel_prefix(b"RETI"), TunnelRoute::Unsupported);
     }
 
     #[test]

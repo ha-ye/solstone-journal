@@ -17,7 +17,7 @@ from solstone.think.link.paths import (
     save_service_token,
 )
 from solstone.think.services import spl
-from solstone.think.spl import relay_client
+from solstone.think.services import spl as relay_client
 from tests.helpers.journal_config import seed_journal_config
 
 

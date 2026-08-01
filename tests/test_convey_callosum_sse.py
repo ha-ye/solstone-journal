@@ -12,7 +12,7 @@ from collections.abc import Callable, Iterator
 import pytest
 
 import solstone.convey.bridge as convey_bridge
-from solstone.think.spl.health import LINK_HEALTH_EVENT
+from solstone.think.link.link_health import LINK_HEALTH_EVENT
 
 
 @pytest.fixture(autouse=True)

@@ -6,7 +6,7 @@ package used by pairing, direct dialing, SPL, Convey, observe, and dashboards.
 
 **Forked from [`github.com/solpbc/spl`](https://github.com/solpbc/spl) `home/` on 2026-04-20.**
 The two copies are now fully independent: no pip dep, no submodule, no sync scripts.
-The `spl` repo's `home/` continues as the open-source reference implementation of the protocol; this package keeps the shared implementation used by pairing, direct dialing, and the link dashboard. The supervised home-side rendezvous daemon lives in `solstone/think/spl/` and runs as `journal spl`.
+The `spl` repo's `home/` continues as the open-source reference implementation of the protocol; this package keeps the shared implementation used by pairing, direct dialing, and the link dashboard. The supervised home-side rendezvous daemon is native `solstone-core spl service`, reached through `journal spl`.
 
 ## layout
 
@@ -14,7 +14,6 @@ The `spl` repo's `home/` continues as the open-source reference implementation o
 |------|---------|
 | `ca.py` | Local CA lifecycle + CSR signing + home-attestation minting. |
 | `auth.py` | `authorized_clients.json` reader/writer with mtime-reload and last-seen tracking. |
-| `browser_pairing.py` | Browser public-key registration over SPL pair-window tunnels. |
 | `bundle.py` | Observer bundle loading and client identity conversion. |
 | `client.py` | PL/SPL tunnel client protocol helpers. |
 | `dialer.py` | Paired-device dialer used by observe and transfer flows. |
@@ -24,9 +23,10 @@ The `spl` repo's `home/` continues as the open-source reference implementation o
 | `mark.py` | Journal mark derivation and display assets. |
 | `nonces.py` | Pair-ceremony nonce store shared with Convey pair routes. |
 | `paths.py` | Journal-path helpers + `SOL_LINK_RELAY_URL` resolution. |
+| `pair_window.py` | TLS-only relay pair-window bridge for native link clients. |
 | `runtime.py` | Convey startup integration for link runtime state. |
 | `tls.py` | Client-side TLS helper wrappers used by PL/SPL helpers. |
-| `upload_key.py` | Home upload HPKE key loading/generation for browser blob uplink. |
+| `ws_buffer.py` | Unbounded byte buffering for the TLS pair-window bridge. |
 | `window.py` | Pairing-window state helpers. |
 
 TLS termination, multiplexing, and inline WSGI dispatch now live in

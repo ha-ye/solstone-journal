@@ -26,3 +26,11 @@ import_roots = ["sklearn"]
 test_only_dependency_locations = [
   "pyproject.toml:dependency-groups.dev",
 ]
+
+[[waves]]
+id = "spl-home-service"
+status = "done"
+distribution = "pyhpke"
+python_roots = ["solstone/think/spl"]
+import_roots = ["pyhpke"]
+test_only_dependency_locations = []
