@@ -100,6 +100,12 @@
   `SBO1` exactly like any other unknown prefix, without an HPKE/blob dependency. The prior
   UUID-byte parse is intentionally absent because it existed only for the dropped blob path;
   the configuration string remains the listener URL's single instance-ID source.
+- **U4 lifecycle repair accepted:** the real client now emits `tunnel_pair` on every incoming
+  control and exactly one `tunnel_close` followed by `health` from every spawned tunnel exit,
+  including connection, prefix, dial, pipe, unknown-prefix, and cancellation paths. Its
+  idempotent pre-abort `disconnect`/`health` tail addresses the A7 lifecycle boundary, while a
+  deterministic shutdown race test closes a pair that loses admission before task spawn. The
+  independent format, 119-SPL/30-core test, strict-clippy, and iOS-library reruns are green.
 - Checkpoint gates after the correction-driven units: `cargo fmt --all -- --check`, strict
   combined clippy, and combined locked tests are green (85 SPL + 12 HPKE); both HPKE and SPL
   libraries pass the explicit `aarch64-apple-ios` check without an exclusion; `cargo deny`
@@ -150,6 +156,22 @@
   returned it; the delegate replaced it with bounded chunked reads and an `EndlessReader` test
   proving it refuses the first byte beyond the aggregate limit. This is a delegate security
   correction, not contract rework.
+- **U4 TLS relay client — returned again.** Fresh-eyes review of the real service seam found
+  that an incoming control message did not emit `tunnel_pair`, and no tunnel path emitted the
+  required `tunnel_close` followed by `health`. This is the redirected scope's surviving C3/A8
+  contract, including connection, prefix, dial, pipe, unknown-prefix, and cancellation exits.
+  The delegate is adding the finally-guaranteed event tail and behavior tests; this is a
+  delegate implementation/test-coverage omission, not contract rework.
+- **U4 tunnel lifecycle return — shutdown race.** The first C3/A8 repair emitted `tunnel_pair`
+  before its final accepting-to-spawn check. A concurrent `stop()` could therefore leave a
+  visible pair with no lifecycle guard and no close tail. The delegate is making every emitted
+  pair terminal exactly once and pinning the race with a deterministic test. This is a
+  follow-up delegate correctness omission, not contract rework.
+- **U5 native service composition — returned.** Its bounded Callosum `try_send` discarded a
+  saturated event silently, so the contract-required final `disconnect`/`health` tail could be
+  lost. The delegate is revising the bounded output strategy and adding an output-saturation
+  integration test. This is a delegate implementation omission caught by fresh-eyes, not
+  contract rework.
 
 ### Explained twice
 

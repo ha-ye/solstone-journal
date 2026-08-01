@@ -81,6 +81,7 @@ struct RelayClientInner {
     admission: Arc<BlobAdmissionGate>,
     health: Mutex<RelayHealth>,
     accepting_tunnels: AtomicBool,
+    disconnect_announced: AtomicBool,
     tunnels: tokio::sync::Mutex<JoinSet<()>>,
 }
 
@@ -101,6 +102,7 @@ impl RelayClient {
                 admission,
                 health: Mutex::new(RelayHealth::new()),
                 accepting_tunnels: AtomicBool::new(true),
+                disconnect_announced: AtomicBool::new(false),
                 tunnels: tokio::sync::Mutex::new(JoinSet::new()),
             }),
         }
@@ -118,7 +120,7 @@ impl RelayClient {
             if result.is_ok() {
                 reconnect_base = Duration::ZERO;
             }
-            self.set_state(RelayHealthState::Reconnecting, "disconnect");
+            self.announce_disconnect();
             let schedule = schedule_reconnect(reconnect_base, jitter_sample())
                 .map_err(|_| RelayError::ListenConnection)?;
             reconnect_base = schedule.next_base;
@@ -131,6 +133,8 @@ impl RelayClient {
         self.inner.accepting_tunnels.store(false, Ordering::Release);
         let mut tunnels = self.inner.tunnels.lock().await;
         tunnels.shutdown().await;
+        drop(tunnels);
+        self.announce_disconnect();
     }
 
     async fn run_once(&self) -> Result<(), RelayError> {
@@ -156,6 +160,7 @@ impl RelayClient {
                 return Err(RelayError::ListenClosed);
             };
             if let ListenControl::Incoming { tunnel_id } = crate::parse_listen_control(message) {
+                self.emit_tunnel_pair(&tunnel_id);
                 self.start_tunnel(tunnel_id).await;
             }
         }
@@ -163,20 +168,27 @@ impl RelayClient {
 
     async fn start_tunnel(&self, tunnel_id: String) {
         if !self.inner.accepting_tunnels.load(Ordering::Acquire) {
+            self.emit_tunnel_close(&tunnel_id);
             return;
         }
+        self.start_tunnel_after_admission_check(tunnel_id).await;
+    }
+
+    async fn start_tunnel_after_admission_check(&self, tunnel_id: String) {
         let mut tunnels = self.inner.tunnels.lock().await;
         while tunnels.try_join_next().is_some() {}
         if !self.inner.accepting_tunnels.load(Ordering::Acquire) {
+            self.emit_tunnel_close(&tunnel_id);
             return;
         }
         let client = self.clone();
+        let lifecycle = TunnelLifecycle::new(client.clone(), tunnel_id.clone());
         tunnels.spawn(async move {
-            client.handle_tunnel(tunnel_id).await;
+            client.handle_tunnel(tunnel_id, lifecycle).await;
         });
     }
 
-    async fn handle_tunnel(&self, tunnel_id: String) {
+    async fn handle_tunnel(&self, tunnel_id: String, _lifecycle: TunnelLifecycle) {
         let url = relay_tunnel_url(
             &self.inner.config.relay_endpoint,
             &format!("/tunnel/{tunnel_id}"),
@@ -234,6 +246,9 @@ impl RelayClient {
     }
 
     fn begin_listen_attempt(&self) {
+        self.inner
+            .disconnect_announced
+            .store(false, Ordering::Release);
         {
             let mut health = lock_unpoisoned(&self.inner.health);
             health.begin_listen_attempt();
@@ -247,6 +262,12 @@ impl RelayClient {
         lock_unpoisoned(&self.inner.health).set_state(state);
         self.inner.emit.emit(event, serde_json::json!({}));
         self.emit_health();
+    }
+
+    fn announce_disconnect(&self) {
+        if !self.inner.disconnect_announced.swap(true, Ordering::AcqRel) {
+            self.set_state(RelayHealthState::Reconnecting, "disconnect");
+        }
     }
 
     fn record_tunnel_success(&self) {
@@ -289,6 +310,19 @@ impl RelayClient {
             "tunnel_unknown_prefix",
             serde_json::json!({"prefix": prefix_hex(prefix)}),
         );
+    }
+
+    fn emit_tunnel_pair(&self, tunnel_id: &str) {
+        self.inner
+            .emit
+            .emit("tunnel_pair", serde_json::json!({"tunnel_id": tunnel_id}));
+    }
+
+    fn emit_tunnel_close(&self, tunnel_id: &str) {
+        self.inner
+            .emit
+            .emit("tunnel_close", serde_json::json!({"tunnel_id": tunnel_id}));
+        self.emit_health();
     }
 
     fn emit_health(&self) {
@@ -348,6 +382,23 @@ struct GlobalAdmission {
     held: bool,
 }
 
+struct TunnelLifecycle {
+    client: RelayClient,
+    tunnel_id: String,
+}
+
+impl TunnelLifecycle {
+    fn new(client: RelayClient, tunnel_id: String) -> Self {
+        Self { client, tunnel_id }
+    }
+}
+
+impl Drop for TunnelLifecycle {
+    fn drop(&mut self) {
+        self.client.emit_tunnel_close(&self.tunnel_id);
+    }
+}
+
 impl GlobalAdmission {
     fn acquire(gate: Arc<BlobAdmissionGate>) -> Option<Self> {
         gate.try_acquire_global()
@@ -370,8 +421,11 @@ impl Drop for GlobalAdmission {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use std::{
+        future,
+        sync::{Arc, Mutex},
+    };
 
     use super::{
         GlobalAdmission, LoopbackConnect, LoopbackDialer, RelayClient, RelayClientConfig,
@@ -382,16 +436,48 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, DuplexStream},
         net::TcpListener,
-        sync::oneshot,
+        sync::{Notify, oneshot},
         time::timeout,
     };
     use tokio_tungstenite::{accept_async, tungstenite::Message};
 
     use crate::{CallosumEmit, ServiceToken};
 
-    #[derive(Default)]
     struct Emitter {
         events: Mutex<Vec<(String, serde_json::Value)>>,
+        changed: Notify,
+    }
+
+    impl Default for Emitter {
+        fn default() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+                changed: Notify::new(),
+            }
+        }
+    }
+
+    impl Emitter {
+        fn snapshot(&self) -> Vec<(String, serde_json::Value)> {
+            match self.events.lock() {
+                Ok(events) => events.clone(),
+                Err(poisoned) => poisoned.into_inner().clone(),
+            }
+        }
+
+        async fn wait_for_event(&self, expected: &str) {
+            loop {
+                let notified = self.changed.notified();
+                if self
+                    .events
+                    .lock()
+                    .is_ok_and(|events| events.iter().any(|(event, _)| event == expected))
+                {
+                    return;
+                }
+                notified.await;
+            }
+        }
     }
 
     impl CallosumEmit for Emitter {
@@ -400,6 +486,7 @@ mod tests {
                 Ok(mut events) => events.push((event.to_owned(), fields)),
                 Err(poisoned) => poisoned.into_inner().push((event.to_owned(), fields)),
             }
+            self.changed.notify_waiters();
         }
     }
 
@@ -469,6 +556,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stop_race_after_pair_emits_one_terminal_close_and_health() -> Result<(), String> {
+        let (peer_sender, _peer_receiver) = oneshot::channel();
+        let emitter = Arc::new(Emitter::default());
+        let emission: Arc<dyn CallosumEmit> = emitter.clone();
+        let client = RelayClient::new(
+            client_config(
+                "127.0.0.1:9".parse().map_err(|_| "test address invalid")?,
+                "token",
+            ),
+            emission,
+            Arc::new(Dialer::new(peer_sender)),
+        );
+
+        client.emit_tunnel_pair("race");
+        client
+            .inner
+            .accepting_tunnels
+            .store(false, std::sync::atomic::Ordering::Release);
+        client
+            .start_tunnel_after_admission_check("race".to_owned())
+            .await;
+
+        assert_eq!(
+            emitter.snapshot(),
+            vec![
+                (
+                    "tunnel_pair".to_owned(),
+                    serde_json::json!({"tunnel_id": "race"})
+                ),
+                (
+                    "tunnel_close".to_owned(),
+                    serde_json::json!({"tunnel_id": "race"})
+                ),
+                (
+                    "health".to_owned(),
+                    serde_json::json!({
+                        "state": "connecting",
+                        "listen_generation": 0,
+                        "last_successful_relay_tunnel_at": null,
+                        "last_relay_tunnel_error": null,
+                        "last_relay_tunnel_error_at": null,
+                        "relay_tunnel_error_status": null,
+                        "relay_admission_saturated_count": 0,
+                    }),
+                ),
+            ]
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn listener_dispatches_tls_to_loopback_and_replays_the_peeked_prefix()
     -> Result<(), String> {
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -501,9 +639,10 @@ mod tests {
         });
         let (peer_sender, mut peer_receiver) = oneshot::channel();
         let emitter = Arc::new(Emitter::default());
+        let emission: Arc<dyn CallosumEmit> = emitter.clone();
         let client = RelayClient::new(
             client_config(address, "known-service-token"),
-            emitter,
+            emission,
             Arc::new(Dialer::new(peer_sender)),
         );
         let running = {
@@ -523,6 +662,23 @@ mod tests {
         assert_eq!(client.inner.admission.global_count(), 0);
 
         client.stop().await;
+        let events_after_stop = emitter.snapshot();
+        let tail = events_after_stop
+            .get(events_after_stop.len().saturating_sub(4)..)
+            .ok_or_else(|| "missing cancelled tunnel event tail".to_owned())?;
+        if tail.len() != 4 {
+            return Err("cancelled tunnel event tail had an unexpected length".to_owned());
+        }
+        assert_eq!(
+            tail[0],
+            (
+                "tunnel_close".to_owned(),
+                serde_json::json!({"tunnel_id": "tls"})
+            )
+        );
+        assert_eq!(tail[1].0, "health");
+        assert_eq!(tail[2], ("disconnect".to_owned(), serde_json::json!({})));
+        assert_eq!(tail[3].0, "health");
         running.abort();
         let _ = running.await;
         server.abort();
@@ -620,9 +776,11 @@ mod tests {
             Ok::<(), ()>(())
         });
         let (peer_sender, _peer_receiver) = oneshot::channel();
+        let emitter = Arc::new(Emitter::default());
+        let emission: Arc<dyn CallosumEmit> = emitter.clone();
         let client = RelayClient::new(
             client_config(address, "known-service-token"),
-            Arc::new(Emitter::default()),
+            emission,
             Arc::new(Dialer::new(peer_sender)),
         );
         let running = {
@@ -642,10 +800,108 @@ mod tests {
             assert!(joined.is_some());
         }
         assert_eq!(client.inner.admission.global_count(), 0);
+        let events = emitter.snapshot();
+        assert!(events.contains(&(
+            "tunnel_pair".to_owned(),
+            serde_json::json!({"tunnel_id": "short"}),
+        )));
+        assert!(events.windows(2).any(|events| {
+            events[0]
+                == (
+                    "tunnel_close".to_owned(),
+                    serde_json::json!({"tunnel_id": "short"}),
+                )
+                && events[1].0 == "health"
+        }));
 
         client.stop().await;
         running.abort();
         let _ = running.await;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stop_emits_final_disconnect_and_health_before_run_task_cancellation()
+    -> Result<(), String> {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .map_err(|_| "relay bind failed".to_owned())?;
+        let address = listener
+            .local_addr()
+            .map_err(|_| "relay address failed".to_owned())?;
+        let (connected_sender, connected_receiver) = oneshot::channel();
+        let (check_sender, check_receiver) = oneshot::channel();
+        let (open_sender, open_receiver) = oneshot::channel();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.map_err(|_| ())?;
+            let mut listen = accept_async(stream).await.map_err(|_| ())?;
+            let _ = connected_sender.send(());
+            check_receiver.await.map_err(|_| ())?;
+            let remains_open = timeout(Duration::from_millis(50), listen.next())
+                .await
+                .is_err();
+            let _ = open_sender.send(remains_open);
+            future::pending::<()>().await;
+            Ok::<(), ()>(())
+        });
+        let (peer_sender, _peer_receiver) = oneshot::channel();
+        let emitter = Arc::new(Emitter::default());
+        let emission: Arc<dyn CallosumEmit> = emitter.clone();
+        let client = RelayClient::new(
+            client_config(address, "known-service-token"),
+            emission,
+            Arc::new(Dialer::new(peer_sender)),
+        );
+        let running = {
+            let client = client.clone();
+            tokio::spawn(async move { client.run().await })
+        };
+
+        connected_receiver
+            .await
+            .map_err(|_| "listen websocket did not connect".to_owned())?;
+        timeout(Duration::from_secs(2), emitter.wait_for_event("connected"))
+            .await
+            .map_err(|_| "connected event did not arrive".to_owned())?;
+
+        client.stop().await;
+        let events_after_stop = emitter.snapshot();
+        let tail = events_after_stop
+            .get(events_after_stop.len().saturating_sub(2)..)
+            .ok_or_else(|| "missing disconnect event tail".to_owned())?;
+        if tail.len() != 2 {
+            return Err("disconnect event tail had an unexpected length".to_owned());
+        }
+        assert_eq!(tail[0], ("disconnect".to_owned(), serde_json::json!({})));
+        assert_eq!(
+            tail[1],
+            (
+                "health".to_owned(),
+                serde_json::json!({
+                    "state": "reconnecting",
+                    "listen_generation": 1,
+                    "last_successful_relay_tunnel_at": null,
+                    "last_relay_tunnel_error": null,
+                    "last_relay_tunnel_error_at": null,
+                    "relay_tunnel_error_status": null,
+                    "relay_admission_saturated_count": 0,
+                }),
+            )
+        );
+        check_sender
+            .send(())
+            .map_err(|_| "listen server stopped early".to_owned())?;
+        assert!(
+            open_receiver
+                .await
+                .map_err(|_| "listen-open check did not finish".to_owned())?
+        );
+
+        running.abort();
+        let _ = running.await;
+        assert_eq!(emitter.snapshot(), events_after_stop);
+        server.abort();
+        let _ = server.await;
         Ok(())
     }
 }
