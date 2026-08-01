@@ -79,7 +79,6 @@ from .processing_proof import has_terminal_processing_proof
 from .share_delete import DELETABLE_SOURCE_STREAMS, delete_source_stream
 from .utils import (
     DEVICE_BINDING_FIELD,
-    DEVICE_BINDING_KIND_BROWSER,
     DEVICE_BINDING_KIND_CERT,
     DISPOSITION_RECEIVED_NOT_WRITTEN,
     MAX_INGEST_SEGMENT_ATTEMPTS,
@@ -368,7 +367,6 @@ def callosum_sse() -> Any:
         return error
 
     binding = observer_device_binding(observer)
-    observer_handle = observer["key"]
     handle = convey_bridge.register_sse_subscriber(key_prefix)
 
     def current_observer() -> dict | None:
@@ -387,15 +385,10 @@ def callosum_sse() -> Any:
     def current_device_rejection() -> tuple[Reason, str] | None:
         if binding is None:
             return None
-        bound_device = binding["device"]
-        bound_kind = binding["kind"]
-        entry = AuthorizedClients(authorized_clients_path()).get(bound_device)
-        if entry is None or entry.kind != bound_kind:
+        if binding["kind"] != DEVICE_BINDING_KIND_CERT:
             return PL_REVOKED, "Paired device revoked"
-        if (
-            bound_kind == DEVICE_BINDING_KIND_BROWSER
-            and entry.observer_handle != observer_handle
-        ):
+        entry = AuthorizedClients(authorized_clients_path()).get(binding["device"])
+        if entry is None:
             return PL_REVOKED, "Paired device revoked"
         return None
 
@@ -517,43 +510,12 @@ def _authorized_pl_entry():
     return entry
 
 
-def _browser_register_token(data: dict[str, Any]) -> str | None:
-    if data.get("platform") != "browser" or data.get("stream_type") != "browser":
-        return None
-    hostname = data.get("hostname")
-    if not isinstance(hostname, str):
-        return None
-    token = hostname.strip().rsplit("-", 1)[-1]
-    if not re.fullmatch(r"[0-9a-f]{12}", token):
-        return None
-    return token
-
-
-def _pending_browser_entry(data: dict[str, Any]):
-    token = _browser_register_token(data)
-    if token is None:
-        return None
-    matches = [
-        entry
-        for entry in AuthorizedClients(authorized_clients_path()).snapshot()
-        if entry.kind == DEVICE_BINDING_KIND_BROWSER
-        and entry.observer_handle is None
-        and entry.fingerprint.removeprefix("sha256:").startswith(token)
-    ]
-    if len(matches) != 1:
-        return None
-    return matches[0]
-
-
 def _device_binding_for_entry(entry) -> dict[str, str]:
     return {"device": entry.fingerprint, "kind": entry.kind}
 
 
 def _resolve_register_device_binding(data: dict[str, Any]) -> dict[str, str] | None:
     entry = _authorized_pl_entry()
-    if entry is not None:
-        return _device_binding_for_entry(entry)
-    entry = _pending_browser_entry(data)
     if entry is not None:
         return _device_binding_for_entry(entry)
     return None
@@ -577,7 +539,7 @@ def register() -> Any:
 
     The in-handler guard admits trusted loopback callers and currently
     authorized PL identities. A device binding is attached only when the caller
-    resolves to a cert-class entry or one pending browser-class ledger entry.
+    resolves to a cert-class entry.
     The route is require_access-exempt so an observer can register before setup
     completes. Mints the DL handle, locks a stream onto the record, and returns
     the pinned descriptor response.
