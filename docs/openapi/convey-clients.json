@@ -8302,7 +8302,8 @@
             "application/json": {
               "example": {
                 "device_label": "Jer iPhone",
-                "role": "phone"
+                "role": "phone",
+                "same_machine": false
               },
               "schema": {
                 "additionalProperties": true,
@@ -8312,6 +8313,9 @@
                   },
                   "role": {
                     "type": "string"
+                  },
+                  "same_machine": {
+                    "type": "boolean"
                   }
                 },
                 "type": "object"
@@ -8384,8 +8388,9 @@
                 }
               }
             },
-            "description": "Access gate rejected a revoked paired-link identity.",
+            "description": "Access gate rejected the pair-start request.",
             "x-reason-codes": [
+              "local_request_only",
               "pl_revoked"
             ]
           },
@@ -8573,23 +8578,49 @@
             "content": {
               "application/json": {
                 "example": {
+                  "revoked_observers": [
+                    {
+                      "name": "phone-a",
+                      "prefix": "phone-a-"
+                    }
+                  ],
                   "unpaired": "sha256:abc123"
                 },
                 "schema": {
                   "additionalProperties": true,
                   "properties": {
+                    "revoked_observers": {
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "prefix": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "prefix"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
                     "unpaired": {
                       "type": "string"
                     }
                   },
                   "required": [
-                    "unpaired"
+                    "unpaired",
+                    "revoked_observers"
                   ],
                   "type": "object"
                 }
               }
             },
-            "description": "The revoked fingerprint."
+            "description": "The revoked fingerprint and any observer records revoked with it."
           },
           "400": {
             "content": {
@@ -8628,6 +8659,19 @@
             "description": "No paired device matched the request.",
             "x-reason-codes": [
               "paired_device_not_found"
+            ]
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Observer revoke cascade failed after the device was unpaired.",
+            "x-reason-codes": [
+              "internal_error"
             ]
           }
         },
