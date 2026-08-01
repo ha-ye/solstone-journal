@@ -108,8 +108,8 @@ def _unsupported_platform_check(os_name: str, arch: str) -> FitCheck:
         )
     elif os_name == "Darwin":
         detail = (
-            "the journal runs on Intel Macs with a hosted provider, but the bundled "
-            "local models need Apple Silicon."
+            "Intel Macs aren't supported — use an Apple Silicon Mac, or run the "
+            "journal on supported Linux."
         )
     else:
         detail = (

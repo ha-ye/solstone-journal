@@ -544,7 +544,7 @@ def test_run_mac_helper_soft_fails_on_packaged_install(
     assert install_models._run_mac_helper(cache_dir) is None
     stderr = capsys.readouterr().err
     assert "Apple Silicon Macs running macOS 14" in stderr
-    assert "Intel Mac" in stderr
+    assert "macOS requires Apple Silicon" in stderr
     assert "source checkout" in stderr
 
     assert install_models._install_models("darwin", "arm64", "coreml") == 0

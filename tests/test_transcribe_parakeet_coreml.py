@@ -245,7 +245,7 @@ def test_resolve_helper_path_packaged_missing_default(
 
     message = str(exc_info.value)
     assert "Apple Silicon Macs running macOS 14" in message
-    assert "Intel Mac" in message
+    assert "macOS requires Apple Silicon" in message
     assert "source checkout" in message
 
 

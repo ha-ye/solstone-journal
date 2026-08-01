@@ -527,9 +527,12 @@ def test_macos_intel_blocks(
     assert result.platform.supported is False
     assert len(result.report.checks) == 1
     assert result.report.checks[0].severity == "blocked"
+    assert "Intel Macs aren't supported" in result.report.checks[0].detail
     assert "Apple Silicon" in result.report.checks[0].detail
     assert check.main([]) == 2
-    assert "Apple Silicon" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Intel Macs aren't supported" in output
+    assert "Apple Silicon" in output
 
 
 def test_windows_blocks(
