@@ -730,6 +730,9 @@
   }
 
   function networkLabel(network) {
+    if (network === 'home') {
+      return window.LinkCopy.RECENT_NETWORK_LABEL_HOME || 'at home';
+    }
     if (network === 'anywhere') {
       return window.LinkCopy.RECENT_NETWORK_LABEL_ANYWHERE || 'from anywhere';
     }

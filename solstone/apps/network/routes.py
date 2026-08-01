@@ -185,6 +185,9 @@ def _display_label(assigned: str, client: str) -> str:
     return assigned or client
 
 
+NETWORK_HOME = "home"
+
+
 def _rough_network(mode: str) -> str:
     return "anywhere" if mode == "pl-via-spl" else "network"
 
@@ -724,6 +727,7 @@ def pair_start() -> Any:
             nonce,
             device_label,
             role=role,
+            same_machine=True,
         )
         response = PairStartResponse(
             nonce=nonce,
@@ -971,7 +975,10 @@ def pair() -> Any:
     assigned_label = consumed.device_label
     client_label = device_label
 
-    network = _rough_network(g.identity.mode)
+    # A machine pairing with itself reaches the journal over loopback, which the
+    # listener reports the same way it reports a relay tunnel. Reach derived from
+    # the peer would therefore read as `anywhere` for the owner's own machine.
+    network = NETWORK_HOME if consumed.same_machine else _rough_network(g.identity.mode)
     try:
         response, fingerprint, paired_at = _complete_pairing(
             consumed,

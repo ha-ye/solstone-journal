@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from solstone.think.journal_io import hold_lock, write_json
@@ -33,6 +33,7 @@ class Nonce:
     expires_at: int
     used: bool
     role: str = ""
+    same_machine: bool = False
 
 
 class NonceStore:
@@ -49,6 +50,7 @@ class NonceStore:
         device_label: str,
         *,
         role: str = "",
+        same_machine: bool = False,
         now: int | None = None,
         ttl: int = NONCE_TTL_SECONDS,
     ) -> Nonce:
@@ -60,6 +62,7 @@ class NonceStore:
             expires_at=ts + ttl,
             used=False,
             role=role,
+            same_machine=same_machine,
         )
         with hold_lock(self._path):
             entries = self._read()
@@ -79,14 +82,9 @@ class NonceStore:
                 return None
             if entry.used or entry.expires_at <= ts:
                 return None
-            entry = Nonce(
-                value=entry.value,
-                device_label=entry.device_label,
-                issued_at=entry.issued_at,
-                expires_at=entry.expires_at,
-                used=True,
-                role=entry.role,
-            )
+            # replace() rather than a field-by-field rebuild: this reconstruction
+            # silently dropped every field added after it was written.
+            entry = replace(entry, used=True)
             entries[value] = entry
             self._write(entries)
             return entry
@@ -131,6 +129,7 @@ class NonceStore:
                     expires_at=int(item.get("expires_at", 0)),
                     used=bool(item.get("used", False)),
                     role=item.get("role") if isinstance(item.get("role"), str) else "",
+                    same_machine=bool(item.get("same_machine", False)),
                 )
         return out
 
@@ -143,6 +142,7 @@ class NonceStore:
                 "expires_at": e.expires_at,
                 "used": e.used,
                 "role": e.role,
+                "same_machine": e.same_machine,
             }
             for e in entries.values()
         ]

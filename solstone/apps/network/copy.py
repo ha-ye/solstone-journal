@@ -156,6 +156,7 @@ DEVICE_EMPTY_BODY = "pair a device to read your journal on the go."
 RECENT_SECTION_TITLE = "recently paired"
 RECENT_NETWORK_LABEL = "on your network"
 RECENT_NETWORK_LABEL_ANYWHERE = "from anywhere"
+RECENT_NETWORK_LABEL_HOME = "at home"
 REFRESH_FAIL_NOTICE = "showing the last state we saw"
 UNPAIR_TITLE_FORMAT = "unpair '{label}'?"
 UNPAIR_BODY = (
