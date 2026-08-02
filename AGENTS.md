@@ -40,7 +40,7 @@ Read, in order, when you enter the repo for a coding task:
 | `solstone/apps/` | Convey apps — each self-contained (`native/` authority + Rust command, `routes.py`, `templates/`) | adding a user-facing feature, a `sol call <app>` verb, a UI surface | `docs/APPS.md` (required reading before modifying `solstone/apps/`) |
 | `solstone/talent/` | AI talent configs (markdown prompts + optional `.py` post-hooks) + installed router skills (`sol`, `journal`); app fragments feed generated router references | defining or tuning a talent; updating router guidance | `solstone/talent/journal/SKILL.md`, `docs/PROMPT_TEMPLATES.md` |
 | `core/` | Rust wave-0 workspace — thin `solstone-core` bin plus library-first adapter crates | Rust scaffold, gates, or Python→Rust porting doctrine | `docs/PORTING.md` |
-| `scripts/` | Repo maintenance scripts — `check_layer_hygiene.py` | tooling that guards the codebase; wired into `make ci` | channel adapters: `docs/CHANNEL_ADAPTERS.md` |
+| `scripts/` | Repo maintenance scripts — `check_layer_hygiene.py` | tooling that guards the codebase; wired into `make install-checks`, not reached by the frozen `make ci` | channel adapters: `docs/CHANNEL_ADAPTERS.md` |
 | `tests/` | Pytest suites + `tests/fixtures/journal/` mock journal | writing tests; debugging flakiness; `make dev` / `make sandbox` use fixtures as the journal | `docs/testing.md` |
 | `tests/js/` | JavaScript harnesses driven by Python node tests | testing browser scripts without a real browser | `docs/testing.md` |
 | `docs/` | All longform documentation | reference lookups; never your first stop | §10 below |
@@ -155,9 +155,9 @@ Do not rerun an unchanged failure merely to seek green.
 
 ### Release rail
 
-> **Rust-conversion freeze:** this entire rail is currently inert. `scripts/release.sh`
-> refuses unconditionally in every mode before any behavior described below can
-> run; the Make release targets fail immediately too. See
+> **Rust-conversion freeze:** this rail's documented entry points are frozen:
+> `scripts/release.sh` refuses unconditionally in every mode, and the Make
+> release targets fail immediately. See
 > `docs/PORTING.md#rust-conversion-freeze`.
 
 DESTRUCTIVE: `bash scripts/release.sh --candidate` is fresh construction; before
@@ -326,7 +326,7 @@ Full depth: `docs/testing.md`.
 
 **Why this lives here.** A codebase-wide audit in April 2026 found 14 layer-hygiene violations in `solstone/think/` and `solstone/apps/`. Infrastructure modules (indexer, importers, schedulers) were silently writing domain state; CLI read-verbs were mutating; get-prefixed functions were creating records on miss. These invariants encode the rules the audit distilled, so the same landmines don't get re-planted. They're inlined here because a one-click-away invariant is a routinely-skipped invariant.
 
-The low-bar grep enforcement is `scripts/check_layer_hygiene.py`, wired into `make ci`. Known audit-flagged files are allowlisted with audit-reference TODOs; the allowlist shrinks as remediation bundles ship.
+The low-bar grep enforcement is `scripts/check_layer_hygiene.py`, wired into `make install-checks` and not reached by the frozen `make ci`. Known audit-flagged files are allowlisted with audit-reference TODOs; the allowlist shrinks as remediation bundles ship.
 
 ### L1 — Layer boundaries are load-bearing
 

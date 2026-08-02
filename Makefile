@@ -66,7 +66,8 @@ JOURNAL_GROUP := $(if $(filter cuda,$(JOURNAL_VARIANT)),journal-cuda,journal-cpu
 # Require uv only for goals that actually use it. `preflight` is a pure
 # stdlib readiness battery and `install` runs preflight as its own fail-fast
 # pre-step, so neither should abort at parse time when uv is absent — they
-# report uv-absence themselves. test/ci/etc. still abort early.
+# report uv-absence themselves. Rust-only and frozen/gated goals are likewise
+# optional; Python-dependent goals outside this list still abort at parse time.
 UV := $(shell command -v uv 2>/dev/null)
 UV_OPTIONAL_GOALS := preflight install render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit ci verify test build format format-check hopper-install test-cov test-integration test-release test-performance test-app test-only watch coverage release release-test release-checks publish-release publish-release-test check-transparency-minisign publish-transparency resign-transparency-pointer
 ifndef UV
@@ -471,15 +472,6 @@ TEST_ENV = SOLSTONE_JOURNAL=tests/fixtures/journal
 # Venv tool shortcuts
 PYTEST := $(VENV_BIN)/pytest
 RUFF := $(VENV_BIN)/ruff
-
-# Keep the default full-suite fan-out LOW: this box runs many concurrent
-# sessions/lodes each invoking `make test`, and their worker pools multiply —
-# concurrent 8-worker suites OOM'd the box on 2026-07-03 (systemd-oomd killed
-# the hub daemon, hopper, and several agent sessions). Override with
-# `make PYTEST_MAX_WORKERS=16 test` on a dedicated/idle box.
-PYTEST_MAX_WORKERS ?= 2
-PYTEST_XDIST_ARGS := -n auto --maxprocesses $(PYTEST_MAX_WORKERS) --dist loadgroup
-PYTEST_UNIT_ARGS := -m "not integration and not performance and not release"
 
 format-check:
 	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
