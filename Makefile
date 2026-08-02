@@ -14,7 +14,7 @@ export TMPDIR := /var/tmp
 PYTEST_BASETEMP_INIT := BASETEMP=$$(mktemp -d /var/tmp/solstone-pytest-XXXXXX); trap 'rm -rf "$$BASETEMP"' EXIT INT TERM;
 PYTEST_BASETEMP_FLAG := --basetemp "$$BASETEMP"
 
-.PHONY: install hopper-install uninstall test test-cov test-integration test-release release-checks test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny check-release-advisory-liveness check-rust-release-manifest check-spl-dependency-pin audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle build-native-sol-root-contract check-native-sol-root-contract check-core-sdist-compile-inputs build-native-sol-journal-host-commands check-native-sol-journal-host-commands build-journal-access-rejection-inventory check-journal-access-rejection-inventory check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat check-native-sol-docs-links check-removed-time-parser-ready dev all sandbox sandbox-stop install-models speakers-analyze-helper parakeet-helper parakeet-helper-clean wheel-speakers-analyze-linux wheel-speakers-analyze-linux-x86_64 wheel-speakers-analyze-linux-aarch64 wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
+.PHONY: install hopper-install uninstall test test-cov test-integration test-release release-checks test-performance test-app test-only format format-check install-checks ci clean clean-install coverage watch versions update update-prices preflight pre-commit skills render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny build check-release-advisory-liveness check-rust-release-manifest check-spl-dependency-pin audit openapi check-openapi check-openapi-observer-client-contract contract check-contract journal-resolution-vectors check-journal-resolution-vectors build-native-sol-grammar-oracle check-native-sol-grammar-oracle build-native-sol-root-contract check-native-sol-root-contract check-core-sdist-compile-inputs build-native-sol-journal-host-commands check-native-sol-journal-host-commands build-journal-access-rejection-inventory check-journal-access-rejection-inventory check-native-sol-python-manifest build-native-sol-inventory check-native-sol-inventory check-native-sol-architecture check-native-sol-contract-routes check-native-sol-conformance check-native-sol-coverage check-native-sol-no-python-spawn check-native-sol-compat check-native-sol-docs-links check-removed-time-parser-ready dev all sandbox sandbox-stop install-models speakers-analyze-helper parakeet-helper parakeet-helper-clean wheel-speakers-analyze-linux wheel-speakers-analyze-linux-x86_64 wheel-speakers-analyze-linux-aarch64 wheel-macos wheel-macos-clean verify verify-api verify-schemathesis update-api-baselines eval-schemas service-logs check-layer-hygiene check-api-conventions check-journal-io-access check-journal-io-mechanic check-journal-config-owner check-call-http-only check-no-legacy-chat check-channel-adapter-scrub check-brain-health-cutover check-tools-http-only check-access-imports-clean check-convey-bind-imports-clean check-schema-bounds check-thin-base-install check-extras-consistency check-cogitate-prompts smoke-cogitate release release-test publish-release publish-release-test FORCE
 
 # Default target - install package in editable mode
 all: install
@@ -26,6 +26,7 @@ VENV_PY := $(VENV_BIN)/python
 PYTHON := $(VENV_PY)
 RUST_MANIFEST := core/Cargo.toml
 IOS_TARGET := aarch64-apple-ios
+RUST_HOST_EXCLUDES := --exclude solstone-core-speakers-analyze --exclude solstone-core-speakers-onnx
 REQUIRE_CARGO := command -v cargo >/dev/null 2>&1 || { echo "cargo is required for Rust checks; install cargo and retry" >&2; exit 1; }
 REQUIRE_RUSTUP := command -v rustup >/dev/null 2>&1 || { echo "rustup is required for the iOS gate; install rustup and retry" >&2; exit 1; }
 # Prep measured, rather than merely anticipated, that a host GNU cargo build of
@@ -37,7 +38,7 @@ SPEAKERS_ANALYZE_LINUX_AARCH64_MATURIN_ARGS := --locked --zig --compatibility ma
 # solstone/think/probe.py, which is stdlib-only precisely so it imports here
 # without a venv. A literal would keep globbing the old filename if the
 # measured macOS minimum ever moves.
-SPEAKERS_ANALYZE_MACOS_TAG := $(shell PYTHONPATH=. python3 -c 'from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS as t; print(t["darwin", "arm64"])')
+SPEAKERS_ANALYZE_MACOS_TAG = $(shell PYTHONPATH=. python3 -c 'from solstone.think.probe import SOLSTONE_CORE_SPEAKERS_ANALYZE_PLATFORM_TAGS as t; print(t["darwin", "arm64"])')
 # Pick the GPU (CUDA) journal runtime only on x86_64 NVIDIA hosts. The
 # CUDA bundle resolves onnxruntime-gpu, which ships NO aarch64 wheel on PyPI, so
 # an aarch64 NVIDIA host (e.g. DGX Spark / GB10) that auto-selected `cuda` would
@@ -67,12 +68,33 @@ JOURNAL_GROUP := $(if $(filter cuda,$(JOURNAL_VARIANT)),journal-cuda,journal-cpu
 # pre-step, so neither should abort at parse time when uv is absent — they
 # report uv-absence themselves. test/ci/etc. still abort early.
 UV := $(shell command -v uv 2>/dev/null)
-UV_OPTIONAL_GOALS := preflight install render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit
+UV_OPTIONAL_GOALS := preflight install render-packaging check-rust-fmt check-rust-msrv check-rust-clippy check-rust-test check-rust-ios check-rust-deny audit ci verify test build format format-check hopper-install test-cov test-integration test-release test-performance test-app test-only watch coverage release release-test release-checks publish-release publish-release-test check-transparency-minisign publish-transparency resign-transparency-pointer
 ifndef UV
 ifneq ($(filter-out $(UV_OPTIONAL_GOALS),$(MAKECMDGOALS)),)
 $(error uv is not installed. Install it: curl -LsSf https://astral.sh/uv/install.sh | sh)
 endif
 endif
+
+# --- Rust-conversion freeze guards ------------------------------------------
+# FREEZE_GUARD: the release rail and the alternate Python test rails are
+# frozen for the duration of the Rust-conversion effort. There is no flag
+# that restores them — the freeze lifts only when this Makefile is edited
+# again. See docs/PORTING.md.
+define FREEZE_GUARD
+	@echo "$(1): frozen for the Rust-conversion effort (development gate is Rust-only; see docs/PORTING.md)" >&2
+	@exit 1
+endef
+
+# TRANSPARENCY_GUARD: the transparency rail is gated behind
+# TRANSPARENCY_ACTIVATED, checked in inactive (0). Set TRANSPARENCY_ACTIVATED=1
+# to restore the real implementation. See docs/PORTING.md.
+TRANSPARENCY_ACTIVATED ?= 0
+export TRANSPARENCY_ACTIVATED
+
+define TRANSPARENCY_GUARD
+	@echo "$(1): transparency rail inactive; set TRANSPARENCY_ACTIVATED=1 to restore (see docs/PORTING.md)" >&2
+	@exit 1
+endef
 
 # User bin directory for symlink (standard location, usually already in PATH)
 USER_BIN := $(HOME)/.local/bin
@@ -157,11 +179,8 @@ install: .installed
 	@touch .installed
 	@$(VENV_BIN)/journal install-models || { echo "journal install-models failed" >&2; exit 1; }
 
-# Lean lode bootstrap: build only the base dependency layer (.installed) that
-# `make ci` needs — venv + dev/host journal deps + skills. Runtime/model
-# provisioning (parakeet build, forced onnxruntime-gpu reinstall + CUDA
-# validation, journal install-models) is intentionally deferred to `install`.
-hopper-install: .installed
+hopper-install:
+	cargo fetch --manifest-path $(RUST_MANIFEST) --locked
 
 # Stdlib-only install-readiness battery — runs before `.venv`/`uv` exist; a
 # blocker failure exits non-zero. Also wired as the first step of `.installed`.
@@ -189,16 +208,17 @@ check-rust-fmt:
 
 check-rust-msrv:
 	@$(REQUIRE_CARGO)
-	@python3 scripts/check_release_preflight.py msrv --toolchain 1.95.0
-	RUSTUP_TOOLCHAIN=1.95.0 python3 scripts/resolve_onnxruntime_capi.py --exec -- cargo check --manifest-path $(RUST_MANIFEST) --workspace --locked
+	@$(REQUIRE_RUSTUP)
+	@rustup toolchain list 2>/dev/null | grep -Eq '^1\.95\.0(-|[[:space:]])' || { echo "Rust toolchain 1.95.0 is required for the MSRV gate; run rustup toolchain install 1.95.0" >&2; exit 1; }
+	RUSTUP_TOOLCHAIN=1.95.0 cargo check --manifest-path $(RUST_MANIFEST) --workspace $(RUST_HOST_EXCLUDES) --locked
 
 check-rust-clippy:
 	@$(REQUIRE_CARGO)
-	python3 scripts/resolve_onnxruntime_capi.py --exec -- cargo clippy --manifest-path $(RUST_MANIFEST) --workspace --all-targets --locked -- -D warnings
+	cargo clippy --manifest-path $(RUST_MANIFEST) --workspace $(RUST_HOST_EXCLUDES) --all-targets --locked -- -D warnings
 
 check-rust-test:
 	@$(REQUIRE_CARGO)
-	python3 scripts/resolve_onnxruntime_capi.py --exec -- cargo test --manifest-path $(RUST_MANIFEST) --workspace --locked
+	cargo test --manifest-path $(RUST_MANIFEST) --workspace $(RUST_HOST_EXCLUDES) --locked
 
 check-rust-ios:
 	@$(REQUIRE_CARGO)
@@ -208,9 +228,12 @@ check-rust-ios:
 
 check-rust-deny:
 	@$(REQUIRE_CARGO)
-	@python3 scripts/check_release_preflight.py cargo-deny
 	cargo fetch --manifest-path $(RUST_MANIFEST) --locked
 	cargo deny --manifest-path $(RUST_MANIFEST) --locked --offline check bans licenses sources
+
+build:
+	@$(REQUIRE_CARGO)
+	cargo build --manifest-path $(RUST_MANIFEST) --workspace $(RUST_HOST_EXCLUDES) --locked
 
 audit:
 	@$(REQUIRE_CARGO)
@@ -458,76 +481,34 @@ PYTEST_MAX_WORKERS ?= 2
 PYTEST_XDIST_ARGS := -n auto --maxprocesses $(PYTEST_MAX_WORKERS) --dist loadgroup
 PYTEST_UNIT_ARGS := -m "not integration and not performance and not release"
 
-# Check formatting without modifying files — gates `make test`
-format-check: .installed
-	@$(RUFF) format --check . || { echo "Run 'make format' to fix formatting"; exit 1; }
+format-check:
+	cargo fmt --manifest-path $(RUST_MANIFEST) --all -- --check
 
-# Run all unit tests — core (tests/) + every app (solstone/apps/*/tests/).
-# xdist lives here, not in pyproject addopts, so bare pytest / pytest-watch /
-# IDE runs stay serial.
-test: .installed format-check
-	@echo "Running unit tests (core + apps)..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q $(PYTEST_UNIT_ARGS) $(PYTEST_XDIST_ARGS)
+test: check-rust-test
 
-# Same suite with full-repo coverage (operator opt-in; used by verify).
-test-cov: .installed format-check
-	@echo "Running unit tests with coverage (core + apps)..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q --cov=. $(PYTEST_UNIT_ARGS) $(PYTEST_XDIST_ARGS)
+test-cov:
+	$(call FREEZE_GUARD,$@)
 
-# Real external-process probes are valuable operator validation, not unit CI.
-test-integration: .installed format-check
-	@echo "Running integration tests..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q -m integration $(PYTEST_XDIST_ARGS)
+test-integration:
+	$(call FREEZE_GUARD,$@)
 
-# Release transactions and real release-host probes run serially, once per
-# candidate attempt, outside development CI.
-test-release: .installed format-check
-	@echo "Running release tests..."
-	$(PYTEST_BASETEMP_INIT) SOLSTONE_RELEASE_TEST_RAIL=1 $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q -m release -n 0
+test-release:
+	$(call FREEZE_GUARD,$@)
 
-release-checks: .installed
-	@$(MAKE) test-release
-	@$(MAKE) check-release-advisory-liveness
-	@$(MAKE) check-transparency-minisign
+release-checks:
+	$(call FREEZE_GUARD,$@)
 
-# Wall-clock thresholds are intentionally opt-in so loaded hosts do not make CI flaky.
-test-performance: .installed format-check
-	@echo "Running performance tests..."
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ -q -m performance
+test-performance:
+	$(call FREEZE_GUARD,$@)
 
-# Run a single app's tests
-test-app: .installed
-	@if [ -z "$(APP)" ]; then \
-		echo "Usage: make test-app APP=<app_name>"; \
-		echo "Example: make test-app APP=todos"; \
-		exit 1; \
-	fi
-	$(PYTEST_BASETEMP_INIT) PYTHONPATH=$(CURDIR) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) solstone/apps/$(APP)/tests/ -v
+test-app:
+	$(call FREEZE_GUARD,$@)
 
-# Run specific test file or pattern
-test-only: .installed
-	@if [ -z "$(TEST)" ]; then \
-		echo "Usage: make test-only TEST=<test_file_or_pattern>"; \
-		echo "Example: make test-only TEST=tests/test_utils.py"; \
-		echo "Example: make test-only TEST=\"-k test_function_name\""; \
-		exit 1; \
-	fi
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) $(TEST)
+test-only:
+	$(call FREEZE_GUARD,$@)
 
-# Auto-format and fix code, then report any remaining issues
-format: .installed
-	@echo "Formatting and fixing code with ruff..."
-	@$(RUFF) format .
-	@$(RUFF) check --fix .
-	@echo ""
-	@echo "Checking for remaining issues..."
-	@if $(RUFF) check .; then \
-		echo ""; \
-		echo "All clean!"; \
-	else \
-		echo ""; \
-		echo "Issues above need manual fixes."; \
-	fi
+format:
+	cargo fmt --manifest-path $(RUST_MANIFEST) --all
 
 # Clean build artifacts and cache files
 clean:
@@ -704,29 +685,23 @@ install-checks: .installed
 	@$(VENV_BIN)/python scripts/check_extras_consistency.py
 	@echo ""
 
-ci: install-checks
-	@echo "=== Running tests ==="
-	@$(MAKE) test
-	@echo ""
-	@echo "All CI checks passed; evidence classes:"
-	@echo "  GNU-host checks: fmt, MSRV, clippy, tests, dependency policy"
-	@echo "  iOS cross-target canary: check-rust-ios"
+ci:
+	@$(MAKE) check-rust-fmt
+	@$(MAKE) check-rust-msrv
+	@$(MAKE) check-rust-clippy
+	@$(MAKE) check-rust-test
+	@$(MAKE) check-rust-ios
+	@$(MAKE) check-rust-deny
+	@echo "All CI checks passed (Rust-only; Rust-conversion freeze in effect — see docs/PORTING.md)"
 
-verify: install-checks
-	@echo "=== Running tests ==="
-	@$(MAKE) test-cov
-	@echo ""
-	@echo "Verification complete!"
+verify: ci
+	@echo "Verification complete! (alias for ci during the Rust-conversion freeze)"
 
-# Watch for changes and run tests (requires pytest-watch)
-watch: .installed
-	@$(UV) pip show pytest-watch >/dev/null 2>&1 || { echo "Installing pytest-watch..."; $(UV) pip install pytest-watch; }
-	$(VENV_BIN)/ptw -- -q
+watch:
+	$(call FREEZE_GUARD,$@)
 
-# Generate HTML coverage report (core + apps)
-coverage: .installed
-	$(PYTEST_BASETEMP_INIT) $(TEST_ENV) $(PYTEST) $(PYTEST_BASETEMP_FLAG) tests/ solstone/apps/ $(PYTEST_UNIT_ARGS) --cov=. --cov-report=html --cov-report=term
-	@echo "Coverage report generated in htmlcov/index.html"
+coverage:
+	$(call FREEZE_GUARD,$@)
 
 # Update all dependencies to latest versions and refresh genai-prices
 update: .installed
@@ -978,27 +953,40 @@ smoke-install-providers: .installed
 	  -v --tb=short --timeout=120
 
 release: ## Locked publication entrypoint
-	@bash scripts/release.sh
+	$(call FREEZE_GUARD,$@)
 
 release-test: ## Locked test-publication entrypoint
-	@bash scripts/release.sh --test
+	$(call FREEZE_GUARD,$@)
 
 .PHONY: check-transparency-minisign
-check-transparency-minisign: .installed
+check-transparency-minisign:
+ifeq ($(TRANSPARENCY_ACTIVATED),1)
+	@$(MAKE) .installed
 	$(VENV_BIN)/python scripts/check_transparency_minisign.py
+else
+	$(call TRANSPARENCY_GUARD,$@)
+endif
 
 .PHONY: publish-release publish-release-test publish-transparency resign-transparency-pointer
-publish-release: .installed
-	@test -n "$(RELEASE_DIR)" || { echo "publish-release: set RELEASE_DIR=<retained ready dir>" >&2; exit 1; }
-	RELEASE_DIR="$(RELEASE_DIR)" $(VENV_BIN)/python scripts/release_publish.py --mode production --root .
+publish-release:
+	$(call FREEZE_GUARD,$@)
 
-publish-release-test: .installed
-	@test -n "$(RELEASE_DIR)" || { echo "publish-release-test: set RELEASE_DIR=<retained ready dir>" >&2; exit 1; }
-	RELEASE_DIR="$(RELEASE_DIR)" $(VENV_BIN)/python scripts/release_publish.py --mode test --root .
+publish-release-test:
+	$(call FREEZE_GUARD,$@)
 
-publish-transparency: .installed
+publish-transparency:
+ifeq ($(TRANSPARENCY_ACTIVATED),1)
 	@test -n "$(RELEASE_DIR)" || { echo "publish-transparency: set RELEASE_DIR=<retained ready dir>" >&2; exit 1; }
+	@$(MAKE) .installed
 	RELEASE_DIR="$(RELEASE_DIR)" SOURCE_COMMIT="$(SOURCE_COMMIT)" $(VENV_BIN)/python scripts/transparency_publish.py publish --root .
+else
+	$(call TRANSPARENCY_GUARD,$@)
+endif
 
-resign-transparency-pointer: .installed
+resign-transparency-pointer:
+ifeq ($(TRANSPARENCY_ACTIVATED),1)
+	@$(MAKE) .installed
 	$(VENV_BIN)/python scripts/transparency_publish.py resign-transparency-pointer --root .
+else
+	$(call TRANSPARENCY_GUARD,$@)
+endif
