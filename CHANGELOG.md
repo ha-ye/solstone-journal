@@ -4,6 +4,19 @@ All notable changes to solstone (the Python package) will be documented in this 
 
 Format adapted from [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), aligned with `cmo/brand/changelog-voice.md`.
 
+## [1.0.22] - 2026-08-01
+
+### Changed
+
+- turning on confidential processing finishes on its own now. once you finish turning it on in your browser, your journal runs its check and shows "confidential processing is ready" when it passes, instead of stopping short until you press check again. that button is still there, and a setup that needs repair, or one still in progress, is left alone.
+- your journal no longer gets you a Gemini key. that option is gone from the thinking app and from the command line. the scout program itself is still running. a Gemini key already saved in your journal keeps working, untouched, with nothing to re-enter and nothing to reconfigure. choosing Gemini and adding your own Google AI Studio key is unchanged: same field, same models, same check that the key works.
+- pairing your browser with your journal, and sending pages to it that way, is gone. sol in the browser is on hold for now. pages already in your journal stay exactly as they are, searchable and readable.
+- on an Intel mac, the journal now says plainly that Apple Silicon is what it needs on a mac, and points you at where it does run: an Apple Silicon mac, or supported linux.
+
+### Fixed
+
+- your journal turns away malformed device authorization it used to let through. an entry in its list of authorized devices could be damaged in a way that still read as a valid certificate. separately, a device whose pairing was stored as empty could skip the check that ties it to that list. both are refused now, before anything gets in. neither shape is one your journal writes, so a device you paired the ordinary way authorizes as it always has. if a device does stop authorizing after this update, pair it again.
+
 ## [1.0.21] - 2026-08-01
 
 ### Changed
