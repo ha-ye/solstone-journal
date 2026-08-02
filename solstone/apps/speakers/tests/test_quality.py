@@ -341,7 +341,6 @@ def test_quality_teaching_copy_is_wired_to_quality_panel() -> None:
     assert "qualityPanel.innerHTML" in ready_block
     assert "${qualityTeachingLine(data)}" in ready_block
     assert "COPY.SPK_OVERVIEW_QUALITY_ERROR_HEADING" in load_block
-    assert "Couldn't load voice quality" not in text
 
     quality_copy = {
         name: value
@@ -354,9 +353,6 @@ def test_quality_teaching_copy_is_wired_to_quality_panel() -> None:
     )
     assert quality_copy["SPK_OVERVIEW_QUALITY_ERROR_HEADING"] == (
         "couldn't load voice quality"
-    )
-    assert all(
-        "error rate" not in str(value).lower() for value in quality_copy.values()
     )
 
 

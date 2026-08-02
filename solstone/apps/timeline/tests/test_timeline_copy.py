@@ -39,7 +39,7 @@ def test_timeline_segment_structure_tokens_survive_copy_migration():
     assert "segmentCount" in source
 
 
-def test_timeline_static_aria_prefixes_are_folded():
+def test_timeline_static_aria_prefixes_are_pinned():
     source = _timeline_js()
 
     expected = (
@@ -55,9 +55,6 @@ def test_timeline_static_aria_prefixes_are_folded():
     )
     for literal in expected:
         assert literal in source
-
-    assert 'aria-label="Return to' not in source
-    assert 'aria-label="Open ' not in source
 
 
 def test_timeline_rollup_pending_copy_pluralizes_ready_verb():

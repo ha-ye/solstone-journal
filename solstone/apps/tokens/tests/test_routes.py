@@ -100,29 +100,6 @@ def _tokens_copy_constants(html: str) -> dict[str, str]:
     }
 
 
-def _leading_words(value: str) -> list[str]:
-    return re.findall(r"[a-z0-9]+", value.lower())
-
-
-def _leading_word_overlap(left: str, right: str) -> int:
-    overlap = 0
-    for left_word, right_word in zip(_leading_words(left), _leading_words(right)):
-        if left_word != right_word:
-            break
-        overlap += 1
-    return overlap
-
-
-def _bare_plural_count_errors(key: str, value: str) -> list[str]:
-    errors = []
-    for match in re.finditer(r"\{n\}\s+([A-Za-z]+)", value):
-        noun = match.group(1)
-        has_plural_placeholder = value[match.end() :].startswith("{s}")
-        if not has_plural_placeholder and noun.endswith("s"):
-            errors.append(f"{key} uses bare plural noun {noun!r} after {{n}}")
-    return errors
-
-
 def _extract_tokens_copy(html: str) -> str:
     start = html.index("  const TOKENS_COPY = {")
     end = html.index("  window.TOKENS_COPY = TOKENS_COPY;", start)
@@ -430,11 +407,6 @@ def test_tokens_static_and_dynamic_empty_rows_share_copy(tokens_env):
         )
 
     assert _static_empty_cell(html, "provider-body") == "no data for this day"
-    context_empty = _dynamic_empty_cell(html, "renderContextTable")
-    assert context_empty == context_empty.lower()
-    assert "No data for this day" not in html
-    assert "No matching contexts" not in html
-    assert "No segment data for this day" not in html
 
 
 def test_tokens_page_renders_collapsed_details_for_all_breakdowns(tokens_env):
@@ -449,38 +421,6 @@ def test_tokens_page_renders_collapsed_details_for_all_breakdowns(tokens_env):
     assert len(tags) == 5
     detail_tags = re.findall(r'<details[^>]*data-disclosure="[\w-]+"[^>]*>', html)
     assert all(" open" not in tag for tag in detail_tags)
-
-
-def test_tokens_disclosure_copy_avoids_heading_restatement_and_bare_count_nouns(
-    tokens_env,
-):
-    html = _tokens_workspace_html(tokens_env)
-    copy = _tokens_copy_constants(html)
-    found = []
-    errors = []
-
-    for match in re.finditer(
-        r'<details[^>]*data-disclosure="(?P<disclosure>[\w-]+)"[^>]*>'
-        r".*?"
-        r'<h2 id="section-(?P<section>[\w-]+)">(?P<heading>[^<]+)</h2>',
-        html,
-        re.S,
-    ):
-        disclosure = match.group("disclosure")
-        key = f"TOKENS_DISCLOSURE_{disclosure.upper().replace('-', '_')}"
-        value = copy.get(key)
-        if value is None:
-            errors.append(f"{key} is missing for disclosure {disclosure!r}")
-            continue
-        found.append((key, match.group("heading"), value))
-
-    assert len(found) >= 5
-    for key, heading, value in found:
-        overlap = _leading_word_overlap(heading, value)
-        if overlap:
-            errors.append(f"{key} repeats {overlap} leading words from {heading!r}")
-        errors.extend(_bare_plural_count_errors(key, value))
-    assert errors == []
 
 
 def test_tokens_disclosure_summaries_pluralize_counts_under_node(tokens_env):

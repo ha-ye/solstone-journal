@@ -165,45 +165,6 @@ def _events_of_kind(day: str, kind: str) -> list[dict]:
     return [event for event in read_chat_events(day) if event["kind"] == kind]
 
 
-def test_build_talent_prompt_uses_lowercase_sol_transcript_role(tmp_path, monkeypatch):
-    import solstone.convey.chat as chat
-
-    _setup_journal(tmp_path, monkeypatch)
-    _reset_chat_state(chat)
-    day = "20990102"
-    monkeypatch.setattr(chat, "_today_day", lambda: day)
-    monkeypatch.setattr(
-        "solstone.convey.chat_stream.time.time",
-        lambda: _ms(2099, 1, 2, 9, 0, 0) / 1000,
-    )
-    append_chat_event(
-        "owner_message",
-        text="owner hello",
-        app="sol",
-        path="/app/sol",
-        facet="work",
-    )
-    append_chat_event(
-        "sol_message",
-        use_id="use-sol",
-        text="sol hello",
-        notes="",
-        requested_target=None,
-        requested_task=None,
-    )
-
-    prompt = chat._build_talent_prompt(
-        "support",
-        "file a ticket",
-        {},
-        {"app": "sol", "path": "/app/sol", "facet": "work"},
-    )
-
-    assert "**Owner**: owner hello" in prompt
-    assert "**sol**: sol hello" in prompt
-    assert "**Sol**:" not in prompt
-
-
 @pytest.fixture
 def chat_client(tmp_path, monkeypatch):
     import solstone.convey.chat as chat

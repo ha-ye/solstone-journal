@@ -244,8 +244,6 @@ def test_install_provider_parakeet_prints_disclosure_and_status(monkeypatch, cap
     assert install_provider.PARAKEET_DOWNLOAD_DISCLOSURE in captured.err
     assert "github.com" in captured.err
     assert "huggingface.co" in captured.err
-    banned = {"capture", "watch", "record", "monitor", "track", "collect"}
-    assert not (banned & set(captured.err.lower().split()))
 
 
 def test_install_provider_parakeet_terminal_failed_returns_nonzero(monkeypatch, capsys):

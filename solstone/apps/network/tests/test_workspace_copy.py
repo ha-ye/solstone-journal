@@ -48,9 +48,7 @@ def test_workspace_renders_pair_flow_copy_and_qr_script(link_env) -> None:
     for name in MODAL_COPY_NAMES:
         assert payload[name] == getattr(copy, name)
 
-    assert "QR rendering lib not bundled yet" not in body
     assert "link-pair-generate" not in body
-    assert "Waiting for phone" not in body
     assert "data.pair_url" not in body
     assert "pair_url" not in body
     assert 'src="/static/pairing-qr.js"' in body

@@ -23,7 +23,6 @@ def test_render_devices_function_emits_device_sections(link_env) -> None:
     assert payload["DEVICE_PAIR_CTA"] == copy.DEVICE_PAIR_CTA
     assert "const roleOrder = ['phone', 'observer', 'peer'];" not in body
     assert "roleLabels" not in body
-    assert "No devices linked yet." not in body
 
     assert "document.createElement('details')" in body
     assert "link-device-group-details" in body

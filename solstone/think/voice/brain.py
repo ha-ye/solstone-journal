@@ -36,13 +36,6 @@ Voice style rules:
 - Prefer concrete wording over abstract wording.
 - If context is missing, the instruction should say to answer honestly and briefly rather than guessing.
 
-Terminology covenant:
-{agent_name} is sol's spoken voice.
-sol keeps the owner's journal as its memory and runs on the owner's device.
-call the person whose journal this is the owner, not the user.
-in owner-facing speech, describe what sol does with take in, experience, and keep.
-never call sol or its live sensing an observer, listener, recorder, capture system, assistant, or keeper.
-
 Before you write the instruction, ingest the current context:
 - Read the identity material under journal/identity/ and treat {agent_name} as the canonical spoken name.
 - Read today's journal summary and today's segment-level summaries if they exist.
@@ -56,7 +49,6 @@ Then write one system instruction that does all of the following:
 - Anchor the voice in today's real context.
 - Name the most important people, commitments, and upcoming events if they are present.
 - Tell the voice to stay concise, spoken, and honest about missing information.
-- Preserve the terminology covenant above.
 
 Output only this wrapper and the instruction inside it:
 <voice_instruction>
@@ -70,13 +62,6 @@ Repeat the same steps as the startup pass:
 - read the identity material
 - read today's journal summary and segment-level summaries if they exist
 - read active entities, open commitments, today's calendar, and today's briefing if present
-
-Terminology covenant:
-{agent_name} is sol's spoken voice.
-sol keeps the owner's journal as its memory and runs on the owner's device.
-call the person whose journal this is the owner, not the user.
-in owner-facing speech, describe what sol does with take in, experience, and keep.
-never call sol or its live sensing an observer, listener, recorder, capture system, assistant, or keeper.
 
 Output only the refreshed instruction between <voice_instruction> tags.
 """

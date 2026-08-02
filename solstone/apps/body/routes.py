@@ -83,7 +83,7 @@ STALE_SOURCE_DAYS = 30
 # same labels the chips and day pages show) by case- and
 # apostrophe-insensitive substring, so "Oura" covers both ring labels
 # ("Oura", "Oura (API)"). With no configured expectations the sentinel
-# is dormant. Copy stays factual (§13): a name, a day count — never
+# is dormant. Copy stays factual: a name, a day count — never
 # advice, never alarm styling.
 # The freshness walk reads month shards for the most recent calendar
 # months only, newest first, stopping early once every expected source is
@@ -1442,7 +1442,7 @@ def _sleep_comparison_line(
     supersede already keeps the ring to one source, so two ring labels
     never juxtapose. Each figure is that source's merged main-session
     span, the same figure that source's headline would state. Pure
-    statement of two measurements (§13): no delta, no better/worse, no
+    factual statement of two measurements: no delta, no better/worse, no
     winner. Cross-device sources lead, the ring closes.
     """
     spans: dict[str, float] = {}
@@ -2272,7 +2272,7 @@ def _blood_pressure(rows: list[dict[str, Any]]) -> dict[str, Any] | None:
 # percentage. These are the most sensitive rows the app renders: each line
 # states what the device reported and which device reported it — a count,
 # a device-stated value, an attribution — never interpretation, alarm
-# framing, or advice (§13).
+# framing, or advice.
 _RHYTHM_EVENT_FRAGMENTS = (
     "IrregularHeartRhythmEvent",
     "HighHeartRateEvent",
@@ -2504,7 +2504,7 @@ def _heart_comparison_line(rows: list[dict[str, Any]]) -> str | None:
     Present only when a genuine cross-device source AND the ring pipe both
     carry raw heart-rate samples for the day (post-supersede, the ring is
     the API pipe). Each part states that source's own min–max — pure
-    juxtaposition (§13): no delta, no better/worse. Cross-device sources
+    juxtaposition: no delta, no better/worse. Cross-device sources
     lead, the ring closes.
     """
     by_source: dict[str, list[float]] = {}
@@ -2806,7 +2806,7 @@ def _recovery_analysis(
 ) -> dict[str, Any] | None:
     """The "How recovered am I?" card: Oura's daily facts, attributed.
 
-    §13-strict: every line states what Oura reported, attributed to Oura
+    Every line states what Oura reported, attributed to Oura
     — never our gloss, never an interpretation. Numbers render as
     attributed values; Oura's own qualitative labels (the resilience
     level, the stress day summary) render as attributed facts in the
@@ -3843,7 +3843,7 @@ def _trend_annotations(
     A marker on the archive's very first day would restate what every
     ribbon's left edge already shows, so only later arrivals annotate —
     the day a new device or app starts contributing, and the day glucose
-    readings begin. Wording stays factual (§13): something begins;
+    readings begin. Wording stays factual: something begins;
     nothing is interpreted.
     """
     if first_day is None:
@@ -4171,7 +4171,7 @@ def warm_trends_cache(
 # For each configured source (body.freshness.quiet_days in journal config)
 # the overview states when it last delivered data. Quiet sources — past
 # their threshold — are named in a slim muted strip, factually ("Stelo
-# last delivered 6 days ago"), never as alarm or advice (§13). The fold
+# last delivered 6 days ago"), never as alarm or advice. The fold
 # walks only the most recent calendar months of shards and caches by the
 # same dedupe-db signature the trends fold keys on.
 

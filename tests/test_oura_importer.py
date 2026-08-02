@@ -1331,7 +1331,7 @@ def test_gate_failure_payload_carries_no_fixture_paths_or_values(
 
 
 # ---------------------------------------------------------------------------
-# Day-summary rendering (§13: attributed facts, no interpretation)
+# Day-summary rendering: attributed facts, no interpretation
 # ---------------------------------------------------------------------------
 
 

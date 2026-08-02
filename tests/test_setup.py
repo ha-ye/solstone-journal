@@ -981,16 +981,6 @@ def test_topology_reason_and_narration_literals_are_pinned() -> None:
         "sol on this Mac already keeps this journal, so setup did not install a background launcher.\n"
         "Run journal doctor if something looks wrong."
     )
-    for value in (reason, narration):
-        assert "—" not in value
-        for banned in (
-            "journal service",
-            "journal host",
-            "server",
-            "users",
-            "capture",
-        ):
-            assert banned not in value
 
 
 def test_linux_launcher_does_not_probe_or_skip_service(

@@ -48,19 +48,6 @@ def test_all_copy_constants_referenced_by_render_surface():
     assert missing == []
 
 
-def test_speaker_copy_avoids_banned_verbs():
-    banned = re.compile(r"\b(capture|watch|record|monitor|track|collect|user)\b", re.I)
-    hits = {
-        name: value
-        for name, value in vars(copy_module).items()
-        if name.startswith("CUR_SPEAKER_")
-        and isinstance(value, str)
-        and banned.search(value)
-    }
-
-    assert hits == {}
-
-
 def test_preview_observations_label_is_pinned_byte_for_byte():
     assert copy_module.CUR_PREVIEW_OBSERVATIONS_LABEL == "notes moved"
 

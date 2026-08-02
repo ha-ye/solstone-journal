@@ -128,49 +128,6 @@ def test_health_spa_shell_workspace_and_route_resolution(health_env):
         assert endpoint
 
 
-def test_health_workspace_device_copy_replaces_observer_headings():
-    workspace = _workspace()
-
-    assert workspace.count("what sol is taking in") == 2
-    assert (
-        '<h2 class="surface-state-heading">sol isn\'t running on any device yet.</h2>'
-        in workspace
-    )
-    assert ">set up a device →</a>" in workspace
-    assert '<div class="card-title">your devices</div>' in workspace
-    assert ">manage observers →</a>" not in workspace
-    assert "no observations active" not in workspace
-    assert "registered observers" not in workspace
-    assert '<div class="observe-section-title">screen</div>' in workspace
-
-
-def test_card_headings_use_lowercase_copy():
-    workspace = _workspace()
-
-    assert '<h2 class="card-title">brain health</h2>' in workspace
-    assert "Brain Health" not in workspace
-    assert "system vitals" in workspace
-    assert "System vitals" not in workspace
-
-
-def test_log_stream_filter_all_option_is_lowercase():
-    workspace = _workspace()
-
-    assert '<option value="all">all streams</option>' in workspace
-    assert "All Streams" not in workspace
-
-
-def test_observe_section_titles_use_lowercase_copy():
-    workspace = _workspace()
-
-    assert '<div class="observe-section-title">system activity</div>' in workspace
-    assert '<div class="observe-section-title">scene analysis</div>' in workspace
-    assert '<div class="observe-section-title">audio transcription</div>' in workspace
-    assert "System Activity" not in workspace
-    assert "Scene Analysis" not in workspace
-    assert "Audio Transcription" not in workspace
-
-
 def test_health_static_js_screen_copy_is_pinned_byte_for_byte():
     source = _health_js()
 

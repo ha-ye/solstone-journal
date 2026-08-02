@@ -2081,8 +2081,6 @@ def test_chat_watchdog_timeout_detail_reports_liveness(tmp_path, monkeypatch):
     assert "; last event progress; " in detail
     assert detail.endswith("liveness events 2")
     assert chat._normalize_chat_error_detail(detail) == detail
-    for banned in ("capture", "watch", "record", "monitor", "track", "collect"):
-        assert banned not in detail
 
 
 def test_late_chat_finish_after_watchdog_timeout_is_abandoned_raw(

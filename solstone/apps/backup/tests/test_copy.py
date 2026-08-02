@@ -18,15 +18,6 @@ from solstone.apps.backup.copy import (
 from solstone.think.offload import OFFLOAD_STALL_REASONS
 from solstone.think.offload_restore import OFFLOAD_RESTORE_REASONS
 
-_VERB_SUBJECT = re.compile(
-    r"\b(?:sol|solstone|the system)\s+"
-    r"(?:observes|watches|sees|captures|records|monitors|tracks|collects)\b",
-    re.IGNORECASE,
-)
-_SURVEILLANCE_NOUN = re.compile(
-    r"\b(?:recording|capture|observation|observer)s?\b", re.IGNORECASE
-)
-
 
 def _backup_js_text() -> str:
     return Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
@@ -161,42 +152,6 @@ def test_backup_copy_verbatim_strings() -> None:
     assert offload["messages"]["show_all_days"] == "show all {count} days"
 
 
-def test_backup_copy_has_no_surveillance_verb_subjects() -> None:
-    assert _VERB_SUBJECT.search("sol records your day")
-
-    offenders = [value for value in backup_copy_values() if _VERB_SUBJECT.search(value)]
-    assert offenders == []
-
-
-def test_backup_copy_has_no_surveillance_nouns() -> None:
-    assert _SURVEILLANCE_NOUN.search("recording")
-    assert _SURVEILLANCE_NOUN.search("recordings")
-    assert _SURVEILLANCE_NOUN.search("Recording")
-    assert _SURVEILLANCE_NOUN.search("Capture")
-
-    values: list[str] = []
-
-    def visit(value: object) -> None:
-        if isinstance(value, str):
-            values.append(value)
-        elif isinstance(value, dict):
-            for item in value.values():
-                visit(item)
-        elif isinstance(value, list):
-            for item in value:
-                visit(item)
-
-    visit({"safe": ["ok", {"nested": "hidden observer copy"}]})
-    assert [value for value in values if _SURVEILLANCE_NOUN.search(value)] == [
-        "hidden observer copy"
-    ]
-
-    offenders = [
-        value for value in backup_copy_values() if _SURVEILLANCE_NOUN.search(value)
-    ]
-    assert offenders == []
-
-
 def test_offload_reason_copy_covers_closed_vocabularies() -> None:
     offload = backup_copy_payload()["offload"]
     stall = offload["stall_reason_labels"]
@@ -209,15 +164,6 @@ def test_offload_reason_copy_covers_closed_vocabularies() -> None:
     for reason in OFFLOAD_RESTORE_REASONS:
         assert restore[reason]
     assert stall["locked"] != offload["stalled_lead"]
-
-
-def test_operated_lane_copy_neutralizes_hosting_terms() -> None:
-    banned = re.compile(
-        r"hosting|hosted|operated backup|\bsign in\b|\bsubscribe\b",
-        re.IGNORECASE,
-    )
-    offenders = [value for value in backup_copy_values() if banned.search(value)]
-    assert offenders == []
 
 
 def test_no_literal_copy_in_workspace_template() -> None:

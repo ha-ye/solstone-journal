@@ -38,15 +38,7 @@ def test_workspace_renders_reach_shell_copy_and_static_guards(link_env) -> None:
     body = response.get_data(as_text=True)
     body_text = _normalized_body(body)
 
-    for gone in (
-        "reach your solstone from anywhere",
-        "blind by construction",
-        "reachable from the internet",
-        "typeof data.enrolled !== 'boolean'",
-        # no unconditional relay claim in the header — false in direct posture
-        "sol pbc carries the connection — but can never see inside it",
-    ):
-        assert gone not in body_text
+    assert "typeof data.enrolled !== 'boolean'" not in body_text
 
     state = _link_state(env)
     payload = state["link_copy"]

@@ -359,7 +359,7 @@ def test_workspace_html_body_panel_focus_management():
     assert "trImageModal" in escape_branch
 
 
-def test_workspace_html_owner_copy_folds_named_transcript_literals():
+def test_workspace_html_pins_named_transcript_literals():
     workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
 
     text = workspace_html.read_text()
@@ -379,23 +379,6 @@ def test_workspace_html_owner_copy_folds_named_transcript_literals():
     for literal in expected_literals:
         assert literal in text
 
-    retired_literals = (
-        "Loading body context...",
-        "Loading segment...",
-        "'Location'",
-        "'Glasses Battery'",
-        "'Photo And Button Events'",
-        "'Device Capabilities'",
-        "'Calendar Snapshot'",
-        '<span class="sr-only">Audio: </span>',
-        '<span class="sr-only">Screen: </span>',
-        "Current raw media size:",
-    )
-    for literal in retired_literals:
-        assert literal not in text
-
-    assert "Loading screen entries..." in text
-    assert "loading screen entries..." in text
     assert "Current time" in text
 
 
@@ -550,8 +533,6 @@ def test_workspace_html_speaker_rendering_states():
     assert "TR_COPY.TR_SPEAKER_HEDGE_MAYBE || ''" in text
     assert "tr-speaker-dot-high" in text
     assert "tr-speaker-dot-medium" in text
-    assert "const displayName = sl.is_owner ? 'You'" not in text
-    assert "Speaker 1:" not in text
 
 
 def test_workspace_html_timeline_rail_vertical_math_contract():
@@ -939,10 +920,8 @@ def test_workspace_html_tab_pill_spacing_contract():
 
 def test_workspace_html_zoom_rail_empty_state_contract():
     workspace_html = Path(__file__).resolve().parents[1] / "workspace.html"
-    copy_py = Path(__file__).resolve().parents[1] / "copy.py"
 
     text = workspace_html.read_text()
-    copy_text = copy_py.read_text()
 
     zoom_empty_css = _css_rule(text, ".tr-zoom-empty")
     assert "position: absolute;" in zoom_empty_css
@@ -967,7 +946,4 @@ def test_workspace_html_zoom_rail_empty_state_contract():
     assert "${" not in emitted_text
     assert "TR_COPY" not in build_zoom_segments
 
-    retired_copy = "widen the time range or pick a different day"
-    assert retired_copy not in text
-    assert retired_copy not in copy_text
     assert ".tr-zoom-segments > .surface-state" not in text

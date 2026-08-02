@@ -828,16 +828,6 @@ def test_render_day_summary_uses_friendly_names_never_raw_identifiers():
     assert "High intensity interval training" in rendered
 
 
-def test_render_day_summary_avoids_surveillance_words():
-    rendered = apple_health._render_day_summary(
-        _rich_day_summary(), import_id="20260704_090000"
-    ).lower()
-
-    for banned in ("capture", "track", "monitor", "collect"):
-        assert banned not in rendered
-    assert re.search(r"\brecorded\b", rendered) is None
-
-
 def test_render_day_summary_signals_only_day_uses_entry_count_lede():
     summary = apple_health._DaySummary(day="20260101")
     apple_health._add_to_day_summary(

@@ -228,30 +228,6 @@ class TestInitDetection:
         ) in resp.data
         assert b"your data stays on your machine" not in resp.data
 
-    def test_no_lowercase_gemini_in_body_copy(self, fresh_client):
-        resp = fresh_client.get("/init")
-        assert re.search(r"\bgemini\b", resp.data.decode()) is None
-
-    def test_no_banned_terms_or_surveillance_verbs(self, fresh_client):
-        resp = fresh_client.get("/init")
-        for phrase in (
-            b"your account",
-            b"sign up for",
-            b"log in to",
-            b"create an account",
-            b"account.solstone.app",
-        ):
-            assert phrase not in resp.data
-        text = resp.data.decode()
-        assert (
-            re.search(
-                r"\bwatch\b|\bcapture\b|\bmonitor\b|\btrack\b|\bcollect\b|\brecord\b",
-                text,
-                re.I,
-            )
-            is None
-        )
-
     def test_portal_unreachable_stub_inert_on_default_path(self, fresh_client):
         resp = fresh_client.get("/init")
         assert b"portal-unreachable" not in resp.data

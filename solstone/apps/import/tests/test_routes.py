@@ -19,72 +19,6 @@ IMPORT_DETAIL_JS = IMPORT_APP_ROOT / "static" / "import_detail.js"
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DRAWER_JS = REPO_ROOT / "solstone" / "convey" / "static" / "drawer.js"
 
-IMPORT_PROPER_NOUNS = (
-    "Apple Calendar",
-    "ChatGPT",
-    "Claude",
-    "Gemini",
-    "GIF",
-    "Google",
-    "Google Calendar",
-    "Google Takeout",
-    "JPEG",
-    "Kindle",
-    "Logseq",
-    "My Clippings.txt",
-    "Obsidian",
-    "Outlook",
-    "PDF",
-    "PNG",
-    "TIFF",
-    "WebP",
-    # Default lowercase validation catches title case; entries pin spelling and errors.
-    "sol",
-)
-
-_TOKEN_PUNCTUATION = "()[]{},.;:!?\"'\u2013\u2014"
-
-
-def _copy_case_errors(
-    value: str,
-    *,
-    context: str,
-    allow_pronoun_i: bool = False,
-) -> list[str]:
-    errors: list[str] = []
-    masked = list(value)
-
-    phrases = sorted(
-        (entry for entry in IMPORT_PROPER_NOUNS if " " in entry),
-        key=len,
-        reverse=True,
-    )
-    for phrase in phrases:
-        for match in re.finditer(re.escape(phrase), value, flags=re.IGNORECASE):
-            actual = value[match.start() : match.end()]
-            if actual != phrase:
-                errors.append(f"{context}: expected {phrase!r}, got {actual!r}")
-            for index in range(match.start(), match.end()):
-                masked[index] = " "
-
-    single_words = {
-        entry.lower(): entry for entry in IMPORT_PROPER_NOUNS if " " not in entry
-    }
-    for raw_token in "".join(masked).split():
-        token = raw_token.strip(_TOKEN_PUNCTUATION)
-        if not token:
-            continue
-        if allow_pronoun_i and token == "I":
-            continue
-        canonical = single_words.get(token.lower())
-        if canonical is not None:
-            if token != canonical:
-                errors.append(f"{context}: expected {canonical!r}, got {token!r}")
-        elif token != token.lower():
-            errors.append(f"{context}: expected lowercase token, got {token!r}")
-
-    return errors
-
 
 def _unescape_js_string(value: str) -> str:
     return value.replace("\\'", "'").replace('\\"', '"')
@@ -458,64 +392,6 @@ def test_source_metadata_descriptions_are_pinned_byte_for_byte():
     )
 
 
-def test_source_metadata_copy_is_lowercase_except_allowed_names():
-    import importlib
-
-    import_routes = importlib.import_module("solstone.apps.import.routes")
-    found = [
-        (f"{source['name']}.{field}", source[field])
-        for source in import_routes.SOURCE_METADATA
-        for field in ("display_name", "description", "upload_prompt")
-    ]
-
-    assert len(found) >= 33
-    errors = [
-        error
-        for context, value in found
-        for error in _copy_case_errors(value, context=context)
-    ]
-    assert errors == []
-
-
-def test_import_surface_state_headings_are_lowercase_except_allowed_names():
-    workspace = (IMPORT_APP_ROOT / "workspace.html").read_text(encoding="utf-8")
-    found = [
-        _unescape_js_string(match.group(2))
-        for match in re.finditer(
-            r"(?<![\w.])heading:\s*(['\"])((?:\\.|(?!\1).)*)\1",
-            workspace,
-        )
-    ]
-
-    assert len(found) >= 4
-    errors = [
-        error
-        for index, value in enumerate(found, start=1)
-        for error in _copy_case_errors(
-            value,
-            context=f"SurfaceState heading {index}",
-            allow_pronoun_i=True,
-        )
-    ]
-    assert errors == []
-
-
-def test_import_step_number_labels_are_lowercase():
-    workspace = (IMPORT_APP_ROOT / "workspace.html").read_text(encoding="utf-8")
-    found = [
-        match.group("value").strip()
-        for match in re.finditer(
-            r"<(?P<tag>[a-z][\w-]*)\s+"
-            r"(?=[^>]*\bclass=\"[^\"]*\bimport-step-number\b[^\"]*\")"
-            r"[^>]*>(?P<value>[^<]+)</(?P=tag)>",
-            workspace,
-        )
-    ]
-
-    assert len(found) >= 6
-    assert all(value == value.lower() for value in found)
-
-
 def test_owner_collision_copy_preserves_placeholders_and_entity():
     source_text = IMPORT_DETAIL_JS.read_text(encoding="utf-8")
     target = "${escapeHtml(principalCollision.target_name || '')}"
@@ -535,14 +411,8 @@ def test_import_detail_owner_facing_strings_are_pinned():
     end = source.index("// --- end owner-facing strings ---")
     region = source[start:end]
     values = re.findall(r"'([^']*)'", region)
-    banned = {"capture", "record", "monitor", "track", "user"}
-
     assert "object.freeze" in region.lower()
     assert values
-    for value in values:
-        lowered = value.lower()
-        assert value == lowered
-        assert {word for word in banned if word in lowered} == set()
     assert "localStorage" not in source
     assert "sessionStorage" not in source
     assert "preserveOpen" not in source

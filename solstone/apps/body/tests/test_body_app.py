@@ -79,57 +79,6 @@ def _rule_block(css: str, selector: str, start: int = 0) -> tuple[int, str]:
     return index, css[index : close + 1]
 
 
-_WORKSPACE_COPY_CASE_PAIRS = (
-    ("How did I sleep?", "how did I sleep?"),
-    ("What was glucose doing?", "what was glucose doing?"),
-    ("How active was I?", "how active was I?"),
-    ("Heart &amp; breathing", "heart &amp; breathing"),
-    ("How recovered am I?", "how recovered am I?"),
-    ("Mind & sound", "mind & sound"),
-    ("Walking metrics", "walking metrics"),
-    ("Body measurements", "body measurements"),
-    ("Other signals", "other signals"),
-    ("Sources this day", "sources this day"),
-    (
-        '<h2 id="body-archive-title" class="body-section-title">Body archive</h2>',
-        '<h2 id="body-archive-title" class="body-section-title">body archive</h2>',
-    ),
-    ("Recent body days", "recent body days"),
-    ("Explore all history", "explore all history"),
-    ("Coverage areas", "coverage areas"),
-    ("Sources represented", "sources represented"),
-    (
-        '<h2 id="body-sources-fresh-title" class="body-section-title">Sources</h2>',
-        '<h2 id="body-sources-fresh-title" class="body-section-title">sources</h2>',
-    ),
-    (
-        '<h2 class="body-highlight-title">Sleep</h2>',
-        '<h2 class="body-highlight-title">sleep</h2>',
-    ),
-    (
-        '<h2 class="body-highlight-title">Glucose</h2>',
-        '<h2 class="body-highlight-title">glucose</h2>',
-    ),
-    (
-        '<h2 class="body-highlight-title">Workouts</h2>',
-        '<h2 class="body-highlight-title">workouts</h2>',
-    ),
-    (
-        '<h2 class="body-highlight-title">Sources</h2>',
-        '<h2 class="body-highlight-title">sources</h2>',
-    ),
-    ("What your body added to the day", "what your body added to the day"),
-    ("Body overview", "body overview"),
-    ("Open day", "open day"),
-    ("Open latest day", "open latest day"),
-    (
-        '<a class="body-btn body-btn--outline" href="/app/body/trends">Trends</a>',
-        '<a class="body-btn body-btn--outline" href="/app/body/trends">trends</a>',
-    ),
-    ("Body · Trends", "body · trends"),
-)
-
-
 def _node_or_skip() -> str:
     node = shutil.which("node")
     if node is None:
@@ -842,8 +791,6 @@ def test_body_drawer_labels_follow_contract():
     assert 'label: "audit"' in source
     assert 'label: "raw types"' in source
     assert 'label: "why this score?"' in source
-    assert "Audit ·" not in source
-    assert "Why this score" not in source
 
 
 def test_day_api_returns_summary_and_factual_glucose_stats(body_env):
@@ -900,17 +847,6 @@ def test_day_api_lede_and_workspace_hero_render_once(body_env):
     assert lede
     assert source.count("bodyDay.lede") == 1
     assert "what your body added to the day" in source
-
-
-def test_body_workspace_template_avoids_surveillance_verbs():
-    body_root = Path(body_routes.__file__).resolve().parent
-    banned = {"capture", "watch", "record", "monitor", "track", "collect"}
-    checked = [body_root / "workspace.html"]
-
-    for path in checked:
-        source = path.read_text(encoding="utf-8").lower()
-        found = {word for word in banned if word in source}
-        assert found == set(), f"{path.name} contains banned copy terms: {found}"
 
 
 def test_read_routes_create_nothing_in_empty_journal(body_env):
@@ -2383,15 +2319,6 @@ def test_status_api_and_workspace_cover_archive_sections(body_env):
     assert "more body data" in source
 
 
-def test_body_workspace_copy_uses_lowercase_display_register():
-    source = _workspace_source()
-
-    assert len(_WORKSPACE_COPY_CASE_PAIRS) == 26
-    for old, new in _WORKSPACE_COPY_CASE_PAIRS:
-        assert new in source, f"lowercase workspace copy missing: {new!r}"
-        assert old not in source, f"uppercase workspace copy remains: {old!r}"
-
-
 def test_status_api_archive_latest_day_and_month_labels(body_env):
     env = body_env()
     december = [
@@ -2449,15 +2376,13 @@ def test_overview_quick_entry_row_and_section_order(body_env):
     source = _workspace_source()
 
     # Quick-entry row: solid button to the latest day with data and trends.
-    # No legacy jump calendar or "This week" button.
+    # The quick-entry row links to the latest day with data and trends.
     assert archive["latest_day"] == "20260704"
     assert archive["coverage"]["start_month"] == "2026-07"
     assert archive["coverage"]["end_month"] == "2026-07"
     assert "open latest day" in source
     assert "bodyDayHref(latestDay)" in source
     assert 'href="/app/body/trends"' in source
-    assert "Jump to date" not in source
-    assert "This week" not in source
 
     # Latest-first order: hero, quick entry, recent days, all history,
     # coverage/sources panels, audit drawer last.
@@ -2518,8 +2443,6 @@ def test_valid_day_page_serves_shell_and_workspace_has_overview_backlink(body_en
     html = env.client.get("/app/body/20260703").get_data(as_text=True)
 
     assert 'data-solstone-shell="spa"' in html
-    assert "Day summary" not in html
-    assert "Glucose 100–140 mg/dL." not in html
     source = _workspace_source()
     assert "body overview" in source
     assert 'renderHeader("", "", true, { showTitle: false })' in source
@@ -5118,10 +5041,7 @@ def test_trends_overview_button_sits_in_quick_entry_row():
     assert latest_at < trends_at
 
 
-def test_trends_copy_avoids_surveillance_and_interpretation_words():
-    # The whole-template surveillance-verb ban is asserted elsewhere; the
-    # trends surface additionally never interprets — no progress or
-    # judgment vocabulary anywhere in the template source.
+def test_trends_copy_avoids_interpretation_words():
     source = _trends_workspace_source()
     interpretive = {"improving", "declining", "better", "worse"}
     found = {word for word in interpretive if word in source}
@@ -6450,12 +6370,8 @@ def test_score_anatomy_renderer_uses_drawer_contract():
     assert "line: anatomyDrawerLine(items)" in source
     assert 'if (!items.length) return "";' in source
     assert "drawer-empty" not in source
-    # The list is attributed to Oura, §13-style.
+    # The list is attributed to Oura.
     assert "Oura\\'s contributors" in source
-
-    lowered = _function_sources("renderScoreAnatomy", "anatomyDrawerLine").lower()
-    for word in ("derived", "computed", "from ", "readings", "timestamp"):
-        assert word not in lowered
 
 
 def test_score_anatomy_guarded_on_contributors_before_rendering():
@@ -6771,7 +6687,7 @@ def test_day_api_resting_fact_ring_only_day_attributes_oura(body_env):
     heart = payload["heart"]
     assert heart is not None
     resting = {fact["label"]: fact for fact in heart["facts"]}["Resting heart rate"]
-    # §13 attributed-fact style, same register as the recovery card.
+    # Attributed-fact style, same register as the recovery card.
     assert resting["value"] == "51 bpm · Oura's measurement"
     assert heart["resting_comparison_line"] is None
 
@@ -6851,7 +6767,7 @@ def test_day_api_ring_resting_fact_carries_typical_after_warm(body_env):
 #
 # For each configured source the status payload states days-since-last-data;
 # the overview names quiet sources in a slim muted strip and lists every
-# configured source's last-delivered day in the coverage area. Copy is §13-
+# configured source's last-delivered day in the coverage area. Copy is
 # factual: names, dates, day counts — never advice, never alarm styling.
 # Fixtures seed days relative to the real clock so the assertions hold on
 # any run date.
@@ -6929,7 +6845,7 @@ def test_status_api_freshness_names_quiet_source_factually(body_env):
 
     freshness_strings = [text.lower() for text in _collect_strings(freshness)]
     assert "stelo last delivered 6 days ago" in freshness_strings
-    # §13: facts only — the banner never advises.
+    # Facts only — the banner never advises.
     assert all("you should" not in text for text in freshness_strings)
     assert all("check your" not in text for text in freshness_strings)
 

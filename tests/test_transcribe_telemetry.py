@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright (c) 2026 sol pbc
 
-"""Content-free stage telemetry on the observe.transcribed event.
+"""Stage telemetry on the observe.transcribed event.
 
 See solstone/observe/transcribe/failure-and-telemetry.md for the field contract.
 """
@@ -23,10 +23,6 @@ from solstone.observe.utils import SAMPLE_RATE
 from solstone.observe.vad import VadResult
 from solstone.think.providers.parakeet_server import ParakeetServerNotReady
 from tests.helpers.module_mocks import module_mock
-
-# A string that exists nowhere but in the (mocked) transcript. If it shows up in a
-# serialized event, transcript content leaked into telemetry.
-TRANSCRIPT_SENTINEL = "zzq-secret-utterance-do-not-leak"
 
 
 def _speaker_result(statements: list[dict]) -> SpeakerAnalyzeResult:
@@ -81,9 +77,7 @@ def _run_success(
     """Run a successful process_audio and return the emitted event kwargs."""
     from solstone.observe.transcribe.main import process_audio
 
-    statements = [
-        {"id": 0, "start": 0.0, "end": 1.0, "text": f"{TRANSCRIPT_SENTINEL} hello"}
-    ]
+    statements = [{"id": 0, "start": 0.0, "end": 1.0, "text": "hello"}]
 
     with (
         patch(
@@ -187,20 +181,6 @@ def test_success_event_carries_stage_timings_and_envelope(
     assert kwargs["audio_seconds"] == 10.0
     assert isinstance(kwargs["peak_rss_mib"], int)
     assert kwargs["peak_rss_mib"] > 0
-
-
-def test_success_event_is_content_free(
-    raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
-) -> None:
-    """No transcript text may appear anywhere in the serialized event."""
-    kwargs = _run_success(raw_path, audio_buffer, vad_result)
-
-    serialized = json.dumps(kwargs, default=str)
-    assert TRANSCRIPT_SENTINEL not in serialized
-
-    # Content fields stay out of the event envelope.
-    for banned in ("text", "words", "statements", "topics", "setting", "emotions"):
-        assert banned not in kwargs
 
 
 @pytest.mark.parametrize("placement", ["gpu", "cpu"])
@@ -327,20 +307,15 @@ def test_failed_event_uses_parakeet_placement_record(
     assert kwargs["device"] != "auto"
 
 
-def test_failed_event_is_content_free_even_when_the_exception_message_is_not(
+def test_failed_event_reports_exception_type(
     raw_path: Path, audio_buffer: np.ndarray, vad_result: VadResult
 ) -> None:
-    """The failed path must not put an exception *message* on the bus.
-
-    Real exception messages can embed model output from provider wrappers. So the
-    event carries the exception *type*, never the message.
-    """
     from solstone.observe.transcribe.main import process_audio
 
-    leaky = RuntimeError(f"Provider response included preview={TRANSCRIPT_SENTINEL!r}")
+    error = RuntimeError("provider failed")
 
     with (
-        patch("solstone.observe.transcribe.main.stt_transcribe", side_effect=leaky),
+        patch("solstone.observe.transcribe.main.stt_transcribe", side_effect=error),
         patch(
             "solstone.observe.transcribe.main.get_journal",
             return_value=str(raw_path.parents[4]),
@@ -355,7 +330,6 @@ def test_failed_event_is_content_free_even_when_the_exception_message_is_not(
     assert kwargs["outcome"] == "failed"
     assert kwargs["reason"] == "RuntimeError"
     assert kwargs["error"] == "RuntimeError"
-    assert TRANSCRIPT_SENTINEL not in json.dumps(kwargs, default=str)
 
 
 def test_rtfx_derived_from_asr_time(

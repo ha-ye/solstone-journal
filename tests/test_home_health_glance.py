@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -15,19 +15,21 @@ from solstone.convey.backlog_source import BacklogSource, load_backlog_source
 from solstone.think.brain_health import HEADLINES
 from tests.helpers.health_glance import healthy_backlog_source
 
-BANNED_RE = re.compile(
-    r"\b(watch|capture|record|monitor|track|collect|observer|observation)\b",
-    re.IGNORECASE,
-)
-EXTENDED_BANNED_RE = re.compile(
-    r"\b("
-    r"capture|watch|record|monitor|track|collect|credentials|api|key|gemini|"
-    r"cloud|model|provider|llm|configure"
-    r")\b",
-    re.IGNORECASE,
-)
 HEALTH_DETAIL_HREF = "/app/health#focus=recent-errors&day=today"
 BACKLOG_NOW = datetime(2026, 7, 21, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def test_home_vitals_strip_green_is_contrast_passing():
+    source = (
+        Path(__file__).resolve().parents[1]
+        / "solstone"
+        / "apps"
+        / "home"
+        / "workspace.html"
+    ).read_text(encoding="utf-8")
+
+    assert "#166534" in source
+    assert "#16a34a" not in source
 
 
 def _brain(
@@ -983,78 +985,6 @@ def test_malformed_pipeline_drops_only_pipeline_issue():
     assert result["issues"][0]["severity"] == "red"
 
 
-def test_owner_facing_strings_use_allowed_terms():
-    states = [
-        build_health_glance(
-            _degraded_capture("fedora"), None, None, backlog=healthy_backlog_source()
-        ),
-        build_health_glance(
-            {"status": "offline", "observers": []},
-            None,
-            None,
-            backlog=healthy_backlog_source(),
-        ),
-        build_health_glance(
-            {"status": "stale", "observers": [{"name": "fedora", "status": "stale"}]},
-            None,
-            None,
-            backlog=healthy_backlog_source(),
-        ),
-        build_health_glance(
-            _active_capture(), None, "5m ago", backlog=healthy_backlog_source()
-        ),
-        build_health_glance(
-            _active_capture(),
-            None,
-            None,
-            brain=_blocked_brain(),
-            backlog=healthy_backlog_source(),
-        ),
-        build_health_glance(
-            _active_capture(),
-            None,
-            None,
-            brain=_checking_brain(),
-            backlog=healthy_backlog_source(),
-        ),
-        build_health_glance(
-            _active_capture(),
-            None,
-            None,
-            brain=_bundled_runtime_brain(progressing=True),
-            backlog=healthy_backlog_source(),
-        ),
-        build_health_glance(
-            {"status": "no_observers", "observers": []},
-            None,
-            None,
-            backlog=healthy_backlog_source(),
-        ),
-        build_health_glance(
-            {"status": "unknown", "observers": []},
-            None,
-            None,
-            backlog=healthy_backlog_source(),
-        ),
-        build_health_glance(
-            _active_capture(),
-            {"status": "warning", "headline": "processing needs attention"},
-            None,
-            backlog=healthy_backlog_source(),
-        ),
-    ]
-
-    for state in states:
-        strings = [state["headline"]]
-        if state["last_observation"] is not None:
-            strings.append(state["last_observation"])
-        if state["cta"] is not None:
-            strings.append(state["cta"]["text"])
-        strings.extend(issue["text"] for issue in state["issues"])
-        for text in strings:
-            assert BANNED_RE.findall(text) == []
-
-
 def test_brain_blocked_chip_uses_owner_copy() -> None:
     result = build_health_glance(
         _active_capture(),
@@ -1068,5 +998,3 @@ def test_brain_blocked_chip_uses_owner_copy() -> None:
     )
 
     assert chip["text"] == HEADLINES["blocked"]
-    assert chip["text"] == chip["text"].lower()
-    assert EXTENDED_BANNED_RE.findall(chip["text"]) == []

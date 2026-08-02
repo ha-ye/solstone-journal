@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 WORKSPACE = Path("solstone/apps/thinking/workspace.html")
@@ -16,16 +15,6 @@ def _workspace_text() -> str:
 
 def _static_text() -> str:
     return STATIC.read_text(encoding="utf-8")
-
-
-def _owner_surface_text() -> str:
-    lines = (_workspace_text() + "\n" + _static_text()).splitlines()
-    return "\n".join(
-        line
-        for line in lines
-        if "SPDX-License-Identifier" not in line
-        and "Copyright (c) 2026 sol pbc" not in line
-    )
 
 
 def test_thinking_workspace_exposes_providers_anchor_and_lanes():
@@ -66,39 +55,3 @@ def test_thinking_static_uses_moved_endpoints_and_local_reason():
     # app owns: this is the one settings endpoint thinking may call.
     assert "/app/settings/api/config" in text
     assert text.count("/app/settings") == 1
-
-
-def test_thinking_surface_avoids_forbidden_owner_terms():
-    combined = _owner_surface_text()
-
-    for term in (
-        "account",
-        "account_id",
-        "sign in",
-        "log in",
-        "subscribe",
-        "upgrade",
-        "capture",
-        "watch",
-        "record",
-        "monitor",
-        "track",
-        "collect",
-    ):
-        assert re.search(rf"\b{re.escape(term)}\b", combined, re.IGNORECASE) is None
-
-    for phrase in (
-        "sol pbc",
-        "this machine",
-        "this device",
-        "sealed",
-        "sealed engine",
-        "not sol pbc's to read",
-        "only you can read it",
-        "checks the hardware before it sends",
-        "verified ✓",
-    ):
-        pattern = (
-            rf"\b{re.escape(phrase)}\b" if phrase[-1].isalnum() else re.escape(phrase)
-        )
-        assert re.search(pattern, combined, re.IGNORECASE) is None

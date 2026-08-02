@@ -127,7 +127,7 @@ class TestActivitiesDayRoutes:
         assert unknown["icon_svg"] == lucide_svg(_GENERIC_ACTIVITY_LUCIDE)
         assert "duration_minutes" not in unknown
 
-    def test_schedule_activity_defaults_are_lowercase(self):
+    def test_schedule_activity_defaults(self):
         from solstone.think.activities import get_default_activity_by_id
 
         expected_names = {
@@ -145,7 +145,6 @@ class TestActivitiesDayRoutes:
             activity = get_default_activity_by_id(activity_id)
             assert activity is not None
             assert activity["name"] == expected_name
-            assert activity["name"] == activity["name"].lower()
 
     @pytest.mark.parametrize(
         ("activity_id", "expected_name", "expected_emoji", "expected_icon"),

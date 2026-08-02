@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -90,7 +89,6 @@ def test_news_index_empty_state_no_date_when_journal_brand_new(journal_copy):
 
     assert response.status_code == 200
     assert copy["empty_next"] == news_copy.NEWS_EMPTY_NO_DATE
-    assert "Your first newsletters arrive" not in copy["empty_next"]
 
 
 def test_news_index_populated_lists_files_reverse_chrono(journal_copy):
@@ -193,49 +191,6 @@ def test_news_sample_content_matches_fixture():
     """
     fixture_text = VERONA_FIXTURE.read_text(encoding="utf-8")
     assert news_copy.SAMPLE_CONTENT == fixture_text
-
-
-def test_news_h1s_are_lowercase(journal_copy):
-    _seed_news(journal_copy, "personal", "20260526", "# 2026-05-26 personal\n")
-    client = _make_client(journal_copy)
-
-    index_data = client.get("/app/news/api/state").get_json()
-    detail_data = client.get("/app/news/api/personal/20260526").get_json()
-    sample_data = client.get("/app/news/api/sample").get_json()
-    workspace_html = client.get("/app/news/workspace").get_data(as_text=True)
-
-    assert index_data["copy"]["index_h1"] == "newsletters"
-    assert f"{detail_data['facet']} · {detail_data['date_label']}" == (
-        "personal · Tue May 26, 2026"
-    )
-    assert sample_data["sample_h1"] == "sample newsletter"
-
-    for selector in (".news-shell", ".news-title", ".news-header"):
-        match = re.search(
-            rf"{re.escape(selector)}\s*\{{(?P<body>.*?)\}}",
-            workspace_html,
-            re.S,
-        )
-        if match is None:
-            continue
-        rule_body = match.group("body")
-        assert "text-transform: uppercase" not in rule_body
-        assert "text-transform: capitalize" not in rule_body
-
-
-def test_news_no_run_log_string_in_surface(journal_copy):
-    _seed_news(journal_copy, "personal", "20260526", "# 2026-05-26 personal\n")
-    client = _make_client(journal_copy)
-
-    texts = [
-        client.get("/app/news/workspace").get_data(as_text=True),
-        json.dumps(client.get("/app/news/api/state").get_json()),
-        json.dumps(client.get("/app/news/api/personal/20260526").get_json()),
-        json.dumps(client.get("/app/news/api/sample").get_json()),
-    ]
-
-    for text in texts:
-        assert "run log" not in text.lower()
 
 
 def test_news_detail_raw_returns_markdown(journal_copy):

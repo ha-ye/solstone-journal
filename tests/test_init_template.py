@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 INIT_HTML = (
@@ -15,15 +14,6 @@ INIT_HTML = (
     / "convey"
     / "templates"
     / "init.html"
-)
-BRAND_CANON_RE = re.compile(
-    r"\b("
-    r"sign\s+in|signed\s+in|signing\s+in|log\s+in|logged\s+in|"
-    r"account|account_id|account\s+settings|linked|authenticate|"
-    r"log\s+into|sign\s+into|your\s+services|journal\s+services|"
-    r"capture|watch|record|monitor|track|collect"
-    r")\b",
-    re.IGNORECASE,
 )
 
 
@@ -57,17 +47,6 @@ def _finalize_body() -> dict[str, Any]:
         "retention_mode": "keep",
         "retention_days": None,
     }
-
-
-def _walk_strings(value: Any):
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():
-            yield from _walk_strings(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _walk_strings(item)
 
 
 def test_init_provider_section_is_basics_only(convey_env_setup_pending) -> None:
@@ -118,51 +97,6 @@ def test_init_scout_stubs_removed(convey_env_setup_pending) -> None:
     assert "L11-stub: signed-in retention pre-fill" not in html
     assert "L11-stub: portal-unreachable" not in html
     assert "{% if false %}" not in raw_template
-
-
-def test_init_rendered_html_is_brand_canon_clean(convey_env_setup_pending) -> None:
-    html = _render_init(convey_env_setup_pending)
-
-    assert BRAND_CANON_RE.search(html) is None
-
-
-def test_init_state_json_is_brand_canon_clean(convey_env_setup_pending) -> None:
-    env = convey_env_setup_pending()
-    response = env.client.get("/init/api/state")
-
-    assert response.status_code == 200
-    for value in _walk_strings(response.get_json()):
-        assert BRAND_CANON_RE.search(value) is None, value
-
-
-def test_init_local_capability_json_is_brand_canon_clean(
-    convey_env_setup_pending, monkeypatch
-) -> None:
-    env = convey_env_setup_pending()
-    report = SimpleNamespace(
-        report=SimpleNamespace(
-            overall="ok",
-            checks=(
-                SimpleNamespace(
-                    name="platform",
-                    severity="ok",
-                    detail="Linux (x86_64)",
-                ),
-                SimpleNamespace(
-                    name="gpu",
-                    severity="ok",
-                    detail="NVIDIA GPU with 6 GB",
-                ),
-            ),
-        )
-    )
-    monkeypatch.setattr("solstone.think.check.build_check_report", lambda: report)
-
-    response = env.client.get("/init/api/local-capability")
-
-    assert response.status_code == 200
-    for value in _walk_strings(response.get_json()):
-        assert BRAND_CANON_RE.search(value) is None, value
 
 
 def test_finalize_preserves_existing_provider_and_scout_config(

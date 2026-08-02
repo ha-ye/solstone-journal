@@ -54,20 +54,8 @@ def test_workspace_empty_state_uses_surface_state():
     assert "observer-empty-heading" not in _workspace_text()
 
 
-def test_workspace_owner_copy_replaces_retired_observer_phrases():
+def test_workspace_device_copy_is_pinned():
     text = _owner_copy_text()
-
-    retired_phrases = (
-        "add observer",
-        "observer name",
-        "loading observers",
-        "add your first observer",
-        "Revoke observer",
-        "Malformed observer response",
-        "Couldn't load observers",
-    )
-    for phrase in retired_phrases:
-        assert phrase not in text
 
     expected_phrases = (
         'aria-label="devices"',
@@ -94,16 +82,4 @@ def test_workspace_owner_copy_replaces_retired_observer_phrases():
     for phrase in expected_phrases:
         assert phrase in unescaped
 
-    assert (
-        "Keep this key secret — anyone with it can upload to your journal." not in text
-    )
-    assert '<div class="credential-label">Server URL</div>' not in text
-    assert "<dt>Last reported</dt>" not in text
-    assert "<dt>Last sol-ping</dt>" not in text
-    assert "<dt>Segments (5-min chunks)</dt>" not in text
-    assert "<dt>Data</dt>" not in text
-    assert "button.textContent = 'reconnecting...';" not in text
-    assert '<div class="credential-label">address</div>' not in text
-    assert "<dt>last asked sol</dt>" not in text
-    assert "serverMessage: 'Malformed observer response'" not in text
     assert "serverMessage: ''" in text

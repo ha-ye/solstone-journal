@@ -1758,32 +1758,6 @@ def test_workspace_overview_voice_handoff_contract():
     assert "NOT_IN_NEW_VOICES_COPY = payload.not_in_new_voices_copy || '';" in template
 
 
-def test_retired_voice_confirm_strings_absent():
-    retired = (
-        "sol found a recurring " + "voice. name it in speakers",
-        "open speaker " + "discovery",
-        "TR_SPEAKER_PICKER_" + "DISCOVERY_LINK",
-    )
-    hits: list[tuple[str, str]] = []
-    for root in (Path("solstone"), Path("tests")):
-        for path in root.rglob("*"):
-            if "__pycache__" in path.parts:
-                continue
-            if not path.is_file() or path.suffix not in {
-                ".py",
-                ".html",
-                ".js",
-                ".json",
-            }:
-                continue
-            text = path.read_text(encoding="utf-8")
-            for value in retired:
-                if value in text:
-                    hits.append((path.as_posix(), value))
-
-    assert hits == []
-
-
 def test_workspace_loads_who_is_this_before_iifes():
     template = Path("solstone/apps/speakers/workspace.html").read_text(encoding="utf-8")
 

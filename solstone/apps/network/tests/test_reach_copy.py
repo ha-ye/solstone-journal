@@ -5,49 +5,7 @@
 
 from __future__ import annotations
 
-import re
-
 from solstone.apps.network import copy
-
-U2_COPY_VALUES = [
-    copy.BRANDLOCK_LINE,
-    copy.REACH_SELECTOR_TITLE,
-    copy.REACH_SELECTOR_HINT,
-    copy.MODE_BYO_NAME,
-    copy.MODE_BYO_DESC,
-    copy.MODE_BYO_DISCLOSURE,
-    copy.MODE_HOSTED_NAME,
-    copy.MODE_HOSTED_DESC,
-    copy.MODE_HOSTED_DISCLOSURE,
-    copy.MODE_BYO_BODY_NOTE,
-    copy.MODE_HOSTED_SETUP_NOTE,
-    copy.MODE_HOSTED_SETUP_CTA,
-    copy.APP_ONOFF_LABEL,
-    copy.APP_ONOFF_SUB_BYO,
-    copy.APP_ONOFF_SUB_HOSTED,
-    copy.REACH_HOME_ADDRESS_LABEL,
-    copy.REACH_HOST_ADDRESS_DISCLOSURE,
-    copy.REACH_HOST_ADDRESS_PLACEHOLDER,
-    copy.REACH_HOST_ADDRESS_APPLY_LABEL,
-    copy.REACH_HOST_ADDRESS_CLEAR_LABEL,
-    copy.REACH_VPN_CANDIDATE_LABEL,
-    copy.REACH_VPN_USE_THIS,
-    copy.REACH_SPL_ACTIVE_BODY,
-    copy.REACH_SPL_TRUST_LINE,
-    copy.REACH_SPL_MANAGE_LABEL,
-    copy.REACH_SPL_CONNECTING_NOTE,
-    copy.CHECK_AGAIN_LABEL,
-    copy.PRIVATE_LINK_DISABLE_CTA,
-    copy.PRIVATE_LINK_SETTING_UP,
-    copy.PRIVATE_LINK_PORTAL_CTA,
-    copy.PRIVATE_LINK_SETUP_SUCCESS,
-    copy.PRIVATE_LINK_SETUP_FAILED,
-    copy.PRIVATE_LINK_DISABLE_SUCCESS,
-    copy.PRIVATE_LINK_DISABLE_FAILED,
-    copy.PRIVATE_LINK_NEEDS_REPAIR,
-    copy.PRIVATE_LINK_RETRY_CTA,
-    *copy.STATUS_SENTENCES.values(),
-]
 
 
 def test_reach_shell_spec_fixed_copy_is_locked() -> None:
@@ -141,42 +99,3 @@ def test_reach_shell_corrected_copy_is_locked() -> None:
         copy.PRIVATE_LINK_NEEDS_REPAIR == "your private network needs setting up again."
     )
     assert copy.PRIVATE_LINK_RETRY_CTA == "try again"
-
-
-def test_reach_shell_copy_stays_in_bounds() -> None:
-    banned_terms = (
-        "sign in",
-        "account",
-        "subscribe",
-        "upgrade",
-        "your services",
-        "sol private link",
-        "price",
-        "$",
-        "billing",
-        "subscription",
-        "invoice",
-        "plan",
-        "phone",
-    )
-    acronym_re = re.compile(r"\b(dl|pl|spl)\b")
-
-    for value in [
-        *U2_COPY_VALUES,
-    ]:
-        lowered = value.lower()
-        for term in banned_terms:
-            assert term not in lowered, value
-        assert not acronym_re.search(lowered), value
-
-    # the reach service is now named "private network"; the legacy names
-    # ("solstone private link" / "solstone hosted" / bare "private link") must
-    # never reappear in customer-facing reach copy.
-    assert copy.MODE_HOSTED_NAME == "private network"
-    assert "private network" in copy.REACH_SPL_MANAGE_LABEL
-    assert "private network" in copy.PRIVATE_LINK_DISABLE_CTA
-    for value in U2_COPY_VALUES:
-        lowered = value.lower()
-        assert "solstone private link" not in lowered, value
-        assert "solstone hosted" not in lowered, value
-        assert "private link" not in lowered, value

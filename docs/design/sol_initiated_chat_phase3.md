@@ -401,8 +401,6 @@ Run, in order:
 
 - Confirm during implementation whether a suitable `set_config` helper exists.
   If not, keep the `sol_voice` writer thin, local to `settings.py`, and atomic.
-- The settings UI copy must follow the owner-facing terminology canon. Avoid
-  banned surveillance verbs in labels and error states.
 - The file-by-file list says "add three new builders" in dispatch, but the
   detailed transport decision names four helper functions: two payload builders
   and two collapse-id helpers. Implementation should treat this as two payload

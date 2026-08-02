@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 from pathlib import Path
 from unittest.mock import patch
@@ -160,42 +159,6 @@ def test_reflections_sample_raw_returns_markdown(journal_copy):
 def test_reflections_sample_content_matches_fixture_on_disk():
     fixture_text = REFLECTION_FIXTURE.read_text(encoding="utf-8")
     assert reflections_copy.SAMPLE_CONTENT == fixture_text
-
-
-def test_reflections_no_uppercase_transform_on_title(journal_copy):
-    client = _make_client(journal_copy)
-
-    response = client.get("/app/reflections/workspace")
-    html = response.get_data(as_text=True)
-
-    assert response.status_code == 200
-    for selector in (
-        ".reflection-shell",
-        ".reflection-header",
-        ".reflection-title",
-    ):
-        match = re.search(rf"{re.escape(selector)}\s*\{{(?P<body>.*?)\}}", html, re.S)
-        if match is None:
-            continue
-        rule_body = match.group("body")
-        assert "text-transform: uppercase" not in rule_body
-        assert "text-transform: capitalize" not in rule_body
-
-
-def test_reflections_no_mirror_string_in_surface(journal_copy):
-    _seed_reflection(journal_copy)
-    client = _make_client(journal_copy)
-
-    texts = [
-        client.get("/app/reflections/workspace").get_data(as_text=True),
-        json.dumps(client.get("/app/reflections/api/state").get_json()),
-        json.dumps(client.get("/app/reflections/api/20260308").get_json()),
-        json.dumps(client.get("/app/reflections/api/sample").get_json()),
-    ]
-
-    for text in texts:
-        assert "mirror" not in text.lower()
-        assert "🪞" not in text
 
 
 def test_reflections_app_json_icon_is_moon():

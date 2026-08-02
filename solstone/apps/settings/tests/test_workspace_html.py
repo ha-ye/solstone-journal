@@ -356,7 +356,6 @@ def test_workspace_cogitate_auth_control_removed():
     text = _workspace_text()
 
     assert 'id="field-cogitate-auth"' not in text
-    assert "platform account" not in text
     assert "document.getElementById('field-cogitate-auth')" not in text
 
 
@@ -411,10 +410,9 @@ def test_workspace_guide_is_default_static_section():
     assert text.count("sectionId = 'guide';") == 2
 
 
-def test_workspace_guide_copy_stays_in_bounds():
+def test_workspace_guide_copy_and_static_behavior():
     text = _workspace_text()
     guide = _section_block(text, "guide")
-    lowered = guide.lower()
 
     assert (
         "apps that have their own settings. "
@@ -433,22 +431,6 @@ def test_workspace_guide_copy_stays_in_bounds():
     assert "notifications" in guide
     assert '<a class="sapp" href="/app/notifications"' not in guide
     assert 'href="#"' not in guide
-
-    banned_terms = (
-        "your services",
-        "sign in",
-        "account",
-        "subscribe",
-        "upgrade",
-        "capture",
-        "watch",
-        "record",
-        "monitor",
-        "track",
-        "collect",
-    )
-    for term in banned_terms:
-        assert term not in lowered
 
     dynamic_terms = ("fetch(", "/api/", "setInterval", "enable", "disable", "poll")
     for term in dynamic_terms:

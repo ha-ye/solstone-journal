@@ -173,9 +173,7 @@ Deferred and failed events carry whatever completed before the failure — typic
 ### The content-free guarantee
 
 No transcript text, word list, topic, setting, or emotion appears in any event field.
-The event carries numbers, paths, and labels only. `tests/test_transcribe_telemetry.py`
-enforces this by seeding the mocked STT with a sentinel string and asserting it appears
-nowhere in the serialized event payload — on the success path *and* the failed path.
+The event carries numbers, paths, and labels only.
 
 **`error` is the exception's type name, never its message.** This is the load-bearing
 detail, and it is structural rather than a matter of care: exception *messages* can

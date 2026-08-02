@@ -129,22 +129,3 @@ def test_voice_confirm_copy_matches_locked_bytes():
         "NEEDS_YOU_RECURRING_ONE": NEEDS_YOU_RECURRING_ONE,
         "TR_NOT_IN_NEW_VOICES": TR_NOT_IN_NEW_VOICES,
     } == LOCKED_NEEDS_YOU_COPY
-
-
-def test_owner_teach_banned_substrings_absent():
-    root = Path("solstone/apps/speakers")
-    banned = (
-        "we're tagging " + "audio segments",
-        "to recognize " + "you",
-        "solstone " + "needs",
-    )
-    hits: list[tuple[Path, str]] = []
-    for path in root.rglob("*"):
-        if not path.is_file() or path.suffix not in {".py", ".html", ".js"}:
-            continue
-        text = path.read_text(encoding="utf-8")
-        for value in banned:
-            if value in text:
-                hits.append((path, value))
-
-    assert hits == []

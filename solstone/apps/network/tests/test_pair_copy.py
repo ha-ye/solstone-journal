@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-import re
-
 from solstone.apps.network import copy
 
 U4_COPY_NAMES = (
@@ -32,15 +30,11 @@ U4_COPY_NAMES = (
     "HERO_BODY",
     "HERO_HOW_REACH_LABEL",
 )
-U4_COPY_VALUES = [getattr(copy, name) for name in U4_COPY_NAMES]
-
 U8_COPY_NAMES = (
     "WINDOW_CLOSED_BUTTON",
     "SUCCESS_VERIFY_NOTE_ANYWHERE",
     "RECENT_NETWORK_LABEL_ANYWHERE",
 )
-U8_COPY_VALUES = [getattr(copy, name) for name in U8_COPY_NAMES]
-
 PRESENTATION_COPY_NAMES = (
     "PRESENTATION_SELECTOR_LABEL",
     "PRESENTATION_PHONE_LABEL",
@@ -55,7 +49,6 @@ PRESENTATION_COPY_NAMES = (
     "REACH_HOME_CANDIDATES_UNAVAILABLE",
     "HOME_CANDIDATES_ERROR",
 )
-PRESENTATION_COPY_VALUES = [getattr(copy, name) for name in PRESENTATION_COPY_NAMES]
 
 
 def _link_copy(env) -> dict[str, object]:
@@ -132,41 +125,6 @@ def test_presentation_and_home_candidate_copy_values_are_locked() -> None:
         == "couldn't check home addresses. you can still type one below."
     )
     assert copy.HOME_CANDIDATES_ERROR == "couldn't check home addresses"
-
-    for value in PRESENTATION_COPY_VALUES:
-        assert value == value.lower()
-
-
-def test_u4_copy_stays_in_bounds() -> None:
-    banned_terms = ("account",)
-    acronym_re = re.compile(r"\b(dl|pl|spl)\b")
-    device_noun_re = re.compile(r"\bphone\b")
-
-    for value in U4_COPY_VALUES:
-        lowered = value.lower()
-        for term in banned_terms:
-            assert term not in lowered, value
-        assert not acronym_re.search(lowered), value
-
-    for value in U4_COPY_VALUES:
-        if value == copy.HERO_BODY:
-            continue
-        assert not device_noun_re.search(value.lower()), value
-
-    assert "phone or laptop" in copy.HERO_BODY.lower()
-
-
-def test_u8_copy_stays_in_bounds() -> None:
-    banned_terms = ("account",)
-    acronym_re = re.compile(r"\b(dl|pl|spl)\b")
-    device_noun_re = re.compile(r"\bphone\b")
-
-    for value in U8_COPY_VALUES:
-        lowered = value.lower()
-        for term in banned_terms:
-            assert term not in lowered, value
-        assert not acronym_re.search(lowered), value
-        assert not device_noun_re.search(lowered), value
 
 
 def test_u4_copy_matches_state_payload(link_env) -> None:

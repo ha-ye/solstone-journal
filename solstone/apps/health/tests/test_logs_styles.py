@@ -146,7 +146,6 @@ def test_severity_label_ink_matches_status_pill():
         assert _contrast_ratio("#fff", background) >= 3.0
     for declaration in (
         "font-size: 0.75em",
-        "text-transform: uppercase",
         "letter-spacing: 0.05em",
         "margin-left: 0.5em",
     ):

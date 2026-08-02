@@ -98,22 +98,18 @@ def test_workspace_renders_each_lane(settings_env):
         "localEndpointClear",
     ):
         assert f'id="{control_id}"' in html
-    assert "advanced provider controls" not in html
     assert "Vertex" not in html
-    assert "Choose how sol thinks" not in html
     assert "window.THINKING =" not in html
     assert "window.THINKING_COPY =" not in html
     assert "/app/thinking/static/thinking.js" in html
 
 
-def test_workspace_loading_copy_is_folded():
+def test_workspace_loading_copy_is_pinned():
     workspace = WORKSPACE.read_text(encoding="utf-8")
     static = STATIC.read_text(encoding="utf-8")
 
     assert "loading thinking settings…" in workspace
     assert "loading thinking settings…" in static
-    assert "loading thinking settings..." not in workspace
-    assert "loading thinking settings..." not in static
 
 
 def test_thinking_literal_paths_resolve(settings_env):
@@ -610,75 +606,3 @@ def test_thinking_state_serves_byo_model_copy_bytes(settings_env) -> None:
         "model_saving": "checking {model} with your key…",
         "probe_failed_save": ("your key works, but {model} didn't answer — {reason}."),
     }
-
-
-def test_thinking_copy_avoids_forbidden_terms() -> None:
-    def owner_surface_text(path: Path) -> str:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        return "\n".join(
-            line
-            for line in lines
-            if "SPDX-License-Identifier" not in line
-            and "Copyright (c) 2026 sol pbc" not in line
-        )
-
-    combined = "\n".join(thinking_copy.thinking_copy_values())
-    combined += "\n" + json.loads(APP_JSON.read_text(encoding="utf-8"))["label"]
-    combined += "\n" + owner_surface_text(WORKSPACE)
-    combined += "\n" + owner_surface_text(STATIC)
-
-    for term in (
-        "account",
-        "account_id",
-        "sign in",
-        "log in",
-        "subscribe",
-        "upgrade",
-        "capture",
-        "watch",
-        "record",
-        "monitor",
-        "track",
-        "collect",
-    ):
-        assert re.search(rf"\b{re.escape(term)}\b", combined, re.IGNORECASE) is None
-
-    for phrase in (
-        "this machine",
-        "this device",
-        "sealed",
-        "sealed engine",
-        "not sol pbc's to read",
-        "only you can read it",
-        "checks the hardware before it sends",
-        "verified ✓",
-    ):
-        pattern = (
-            rf"\b{re.escape(phrase)}\b" if phrase[-1].isalnum() else re.escape(phrase)
-        )
-        assert re.search(pattern, combined, re.IGNORECASE) is None
-
-
-def test_thinking_copy_avoids_banned_absolute_claims() -> None:
-    def owner_surface_text(path: Path) -> str:
-        lines = path.read_text(encoding="utf-8").splitlines()
-        return "\n".join(
-            line
-            for line in lines
-            if "SPDX-License-Identifier" not in line
-            and "Copyright (c) 2026 sol pbc" not in line
-        )
-
-    combined = "\n".join(thinking_copy.thinking_copy_values())
-    combined += "\n" + json.loads(APP_JSON.read_text(encoding="utf-8"))["label"]
-    combined += "\n" + owner_surface_text(WORKSPACE)
-    combined += "\n" + owner_surface_text(STATIC)
-
-    for phrase in (
-        "never " + "sees",
-        "recordings stay here",
-        "audio never leaves",
-        "never your audio",
-        "speech becomes text on your device first",
-    ):
-        assert re.search(rf"\b{re.escape(phrase)}\b", combined, re.IGNORECASE) is None

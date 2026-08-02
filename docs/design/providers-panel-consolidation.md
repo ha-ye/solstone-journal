@@ -90,7 +90,7 @@ Failed-reason lookup:
 | `install_error === INSTALL_FAILED_UV_MISSING` | that constant value |
 | other non-empty string | the server-provided string |
 
-The renderer must source the prefix and fallback values from `INSTALL_COPY` (`workspace.html:3485`, `install_copy.py:6-22`) and must not retype phase strings because `test_workspace_does_not_duplicate_install_copy_strings` greps for those values (`test_workspace_html_terminology.py:79-84`).
+The renderer must source the prefix and fallback values from `INSTALL_COPY` (`workspace.html:3485`, `install_copy.py:6-22`) and must not retype phase strings because `test_workspace_does_not_duplicate_install_copy_strings` checks those values (`test_workspace_install_integrity.py`).
 
 Disabled flag:
 
@@ -189,10 +189,9 @@ Visual smoke data source: use a clean temporary settings journal with `setup.com
 
 Playwright precondition: `pytest-playwright` is already in dev dependencies (`pyproject.toml:181-189`), and `make install` installs Chromium (`Makefile:54-58`). Running the visual smoke outside the installed dev env requires the same `playwright install chromium` precondition.
 
-Terminology test updates:
+Retained integrity coverage:
 
-- `test_workspace_bundled_provider_iteration_includes_openhands` currently asserts the 3-provider literal (`test_workspace_html_terminology.py:57-60`); replace with a 5-provider unified-panel assertion.
-- `test_bundled_provider_overflow_keeps_expected_actions` currently greps for `function bundledProviderOverflow` (`test_workspace_html_terminology.py:63-77`); update to the unified overflow/action function name or replace with a JS-presence assertion on expected action labels.
+- `test_workspace_does_not_duplicate_install_copy_strings` remains in `test_workspace_install_integrity.py`; keep it aligned with the unified renderer's copy source.
 
 Makefile:
 
@@ -206,7 +205,7 @@ Makefile:
 | `solstone/apps/settings/routes.py` | Extend `GET /api/providers` (`routes.py:772-901`) with `local_model` handling plus top-level `local` and extended `mlx` install-state dicts. Do not touch contract-layer producers. |
 | `solstone/apps/settings/workspace.html` | Replace three renderer regions: CSS around `workspace.html:947-1075`, markup around `workspace.html:2424-2503`, bundled renderer/action/poll around `workspace.html:5365-5660`, local/mlx poll/progress renderers around `workspace.html:5708-6125`, and dropdown handlers around `workspace.html:6406-6479`. |
 | `solstone/apps/settings/tests/test_workspace_html.py` | Rewrite structural assertions that currently require `mlxBootstrapRegion`/`localBootstrapRegion` and old bootstrap calls (`test_workspace_html.py:96-194`). |
-| `solstone/apps/settings/tests/test_workspace_html_terminology.py` | Update old bundled iteration and overflow-function greps (`test_workspace_html_terminology.py:57-77`); preserve install-copy duplication guard (`test_workspace_html_terminology.py:79-84`). |
+| `solstone/apps/settings/tests/test_workspace_install_integrity.py` | Preserve the install-state and install-copy integrity checks. |
 | `solstone/apps/settings/tests/test_providers_payload_extended.py` | New endpoint payload test. Add SPDX header because this is Python source. |
 | `solstone/apps/settings/tests/test_providers_panel_visual.py` | New pytest-playwright visual smoke. Add SPDX header because this is Python source. |
 | `Makefile` | Add visual smoke test to `smoke-install-providers` (`Makefile:565-571`). |
@@ -219,7 +218,7 @@ Use the requested three-commit split:
 
 1. Backend payload extension: `routes.py` only. Add `local` and extended `mlx` payloads to `/api/providers`; include optional `local_model` request handling. This commit is informed by the frontend plan because the poll request needs the local picker value.
 2. Frontend markup + JS: `workspace.html`. Add unified panel, relocate model pickers, replace renderer/action/poll functions, retire old region DOM ids/classes.
-3. Tests + Makefile: structural test rewrite, terminology updates, endpoint payload test, visual smoke, and `smoke-install-providers` target update.
+3. Tests + Makefile: structural test rewrite, integrity updates, endpoint payload test, visual smoke, and `smoke-install-providers` target update.
 
 This split keeps the locked contract untouched and avoids compatibility shims or deprecated aliases.
 

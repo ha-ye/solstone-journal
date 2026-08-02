@@ -925,20 +925,6 @@ def test_ac15_composed_chat_copy_is_not_redundant():
     assert composed.count("try") <= 1
 
 
-def test_ac16_readiness_copy_matches_presenter_rules():
-    assert (
-        responsiveness.NON_RESPONSIVE_REASON_CODE
-        not in responsiveness.NON_RESPONSIVE_READINESS_SUMMARY
-    )
-    summary = responsiveness.NON_RESPONSIVE_READINESS_SUMMARY
-    assert summary[0].islower()
-    assert not summary.endswith(".")
-
-    detail = responsiveness.NON_RESPONSIVE_READINESS_DETAIL
-    assert detail[0].isupper()
-    assert detail.endswith(".")
-
-
 def test_public_all_exact_surface():
     assert responsiveness.__all__ == [
         "NON_RESPONSIVE_OUTPUT_FRAGMENT",

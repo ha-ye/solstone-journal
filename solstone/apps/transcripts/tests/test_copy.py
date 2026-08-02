@@ -67,9 +67,3 @@ def test_copy_values_flatten_payload_values():
 
 def test_voice_handoff_copy_matches_locked_bytes():
     assert TR_SPEAKER_SOMEONE_ELSE == "someone else…"
-
-
-def test_copy_avoids_surveillance_verbs():
-    banned = re.compile(r"\b(capture|watch|record|monitor|track|collect)\b", re.I)
-
-    assert [value for value in transcripts_copy_values() if banned.search(value)] == []

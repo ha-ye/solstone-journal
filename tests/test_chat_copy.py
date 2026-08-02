@@ -81,36 +81,6 @@ def test_jobs_and_dispatch_origin_copy_bytes():
     assert chat_copy.CHAT_JOBS_INDICATOR_PLURAL_FORMAT == "sol is running {count} jobs"
 
 
-def _chat_status_copy_values() -> tuple[str, ...]:
-    return (
-        chat_copy.TALENT_LABEL_READ_RUNNING,
-        chat_copy.TALENT_LABEL_READ_FINISHED,
-        chat_copy.TALENT_LABEL_READ_ERRORED,
-        chat_copy.TALENT_LABEL_EXEC_RUNNING,
-        chat_copy.TALENT_LABEL_EXEC_FINISHED,
-        chat_copy.TALENT_LABEL_EXEC_ERRORED,
-        chat_copy.TALENT_LABEL_SUPPORT_RUNNING,
-        chat_copy.TALENT_LABEL_SUPPORT_FINISHED,
-        chat_copy.TALENT_LABEL_SUPPORT_ERRORED,
-        chat_copy.CHAT_TALENT_QUEUED_LABEL,
-    )
-
-
-def test_chat_status_copy_is_lowercase():
-    # test_js_parity covers every JS talent label plus the queued label, so the
-    # Python lowercase guard transitively covers the JS twin without duplicating it.
-    for value in _chat_status_copy_values():
-        assert value == value.lower()
-
-
-def _thinking_option_values() -> tuple[str, str, str]:
-    return (
-        chat_copy.CHAT_THINKING_OPT_ON_TAP,
-        chat_copy.CHAT_THINKING_OPT_ALWAYS,
-        chat_copy.CHAT_THINKING_OPT_NEVER,
-    )
-
-
 def test_thinking_copy_bytes():
     expected = """CHAT_THINKING_EXPANDER_LABEL = "show thinking"
 CHAT_THINKING_COLLAPSER_LABEL = "hide thinking"
@@ -134,8 +104,6 @@ CHAT_THINKING_SETTING_HELP = "sol does some thinking before replying. choose how
     )
 
     assert actual == expected
-    for value in _thinking_option_values():
-        assert value == value.lower()
 
 
 def test_js_parity():
@@ -206,45 +174,6 @@ CHAT_THINKING_SETTING_HELP: "sol does some thinking before replying. choose how 
 """
     for expected_line in expected_js_thinking.splitlines():
         assert expected_line in text
-
-
-def test_thinking_copy_old_titlecase_literal_removed():
-    paths = (
-        Path("solstone/apps/chat/copy.py"),
-        Path("solstone/convey/static/chat_copy.js"),
-        Path("tests/test_chat_copy.py"),
-    )
-
-    for path in paths:
-        text = path.read_text(encoding="utf-8")
-        for value in _thinking_option_values():
-            assert value.capitalize() not in text
-
-
-def test_chat_status_copy_old_titlecase_literals_removed():
-    paths = (
-        Path("solstone/apps/chat/copy.py"),
-        Path("solstone/convey/static/chat_copy.js"),
-        Path("tests/test_chat_copy.py"),
-        Path("tests/test_convey_chat.py"),
-        Path("solstone/convey/static/tests/chat-bar-copy.html"),
-    )
-    old_literals = (
-        "Read " + "your journal",
-        "Could" + "n't finish reading your journal",
-        "Making " + "that change…",
-        "Made " + "the change",
-        "Could" + "n't finish the change",
-        "Reaching " + "solstone support…",
-        "Reached " + "solstone support",
-        "Could" + "n't reach solstone support",
-        "Waiting " + "to start…",
-    )
-
-    for path in paths:
-        text = path.read_text(encoding="utf-8")
-        for literal in old_literals:
-            assert literal not in text
 
 
 def test_closer_constants_byte_parity():

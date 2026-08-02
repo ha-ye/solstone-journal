@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import pytest
@@ -79,12 +78,6 @@ def test_agent_label_humanises_unmapped_ids_and_handles_empty():
     assert routes._agent_label("morning_briefing") == "Morning Briefing"
     assert routes._agent_label("") == ""
     assert routes._agent_label(None) == ""
-
-
-def test_search_routes_no_longer_use_agent_title():
-    text = Path(routes.__file__).read_text(encoding="utf-8")
-
-    assert "agent.title()" not in text
 
 
 def test_unmapped_talent_payload_keeps_raw_name_and_humanises_label(

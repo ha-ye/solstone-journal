@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 import shutil
 import subprocess
@@ -16,24 +15,6 @@ WHO_IS_THIS_JS = (
 )
 WORKSPACE_HTML = REPO_ROOT / "solstone" / "apps" / "speakers" / "workspace.html"
 APP_CSS = REPO_ROOT / "solstone" / "convey" / "static" / "app.css"
-REPO_WALK_PRUNE_DIRS = {
-    ".git",
-    ".venv",
-    "node_modules",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-    "htmlcov",
-    "dist",
-    "build",
-    "target",
-    ".cache",
-    "logs",
-    "tmp",
-    "scratch",
-    "journal",
-}
 SPK_OVERVIEW_SELECT_CLASS = re.compile(r"\.spk-overview-select(?![A-Za-z0-9_-])")
 CSS_DISPLAY_DECLARATION = re.compile(r"(^|;)\s*display\s*:", re.IGNORECASE)
 CSS_DISPLAY_NONE_DECLARATION = re.compile(
@@ -1171,19 +1152,6 @@ def _style_blocks(html: str) -> list[str]:
     ]
 
 
-def _repo_text_files():
-    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-        dirnames[:] = [
-            dirname for dirname in dirnames if dirname not in REPO_WALK_PRUNE_DIRS
-        ]
-        for filename in filenames:
-            path = Path(dirpath) / filename
-            try:
-                yield path, path.read_text(encoding="utf-8")
-            except (UnicodeDecodeError, OSError):
-                continue
-
-
 def test_spk_overview_select_css_detector_handles_parser_edges() -> None:
     css = """
     @charset "utf-8";
@@ -1274,23 +1242,6 @@ def test_spk_overview_select_display_rules_have_hidden_override() -> None:
         ".spk-overview-select display rules need a co-located "
         "[hidden] display:none override: " + "; ".join(failures)
     )
-
-
-def test_owner_candidate_copy_uses_lowercase_literals_repo_wide() -> None:
-    old_title = "Is this " + "your voice?"
-    old_owner_prefix = "We found " + "a likely owner"
-    lowercase_title = "is this " + "your voice?"
-    offenders: list[str] = []
-    for path, text in _repo_text_files():
-        relative = path.relative_to(REPO_ROOT)
-        if old_title in text:
-            offenders.append(f"{relative}: uppercase owner title")
-        if old_owner_prefix in text:
-            offenders.append(f"{relative}: uppercase owner copy")
-
-    assert offenders == []
-    test_source = Path(__file__).read_text(encoding="utf-8")
-    assert test_source.count(lowercase_title) == 6
 
 
 def test_who_is_this_accessibility_contract() -> None:

@@ -11,9 +11,6 @@ from solstone.convey import create_app
 
 WORKSPACE = Path(__file__).resolve().parents[1] / "workspace.html"
 NOTICES = Path(__file__).resolve().parents[3] / "THIRD_PARTY_NOTICES.md"
-BANNED_OWNER_WORDS = re.compile(
-    r"\b(capture|watch|record|monitor|track|collect)\b", re.IGNORECASE
-)
 
 
 def _workspace_text() -> str:
@@ -127,8 +124,7 @@ def test_parakeet_cpp_device_round_trips_through_settings_config(settings_env) -
     assert payload["transcribe"]["parakeet-cpp"] == {"device": "cpu"}
 
 
-def test_parakeet_cpp_notices_and_owner_copy() -> None:
-    fieldset = _parakeet_cpp_fieldset()
+def test_parakeet_cpp_notices() -> None:
     notices = NOTICES.read_text(encoding="utf-8")
     section = notices.split("## runtime-downloaded provider artifacts (parakeet-cpp)")[
         1
@@ -140,5 +136,3 @@ def test_parakeet_cpp_notices_and_owner_copy() -> None:
     assert "CC-BY-4.0" in section
     assert "Downloaded file: tdt-0.6b-v3-q8_0.gguf" in section
     assert "Bundled file: tdt-0.6b-v3-q8_0.gguf" not in section
-    assert BANNED_OWNER_WORDS.search(fieldset) is None
-    assert BANNED_OWNER_WORDS.search(section) is None

@@ -15,7 +15,7 @@ TALENT_LABEL_SUPPORT_RUNNING = "reaching solstone support…"
 TALENT_LABEL_SUPPORT_FINISHED = "reached solstone support"
 TALENT_LABEL_SUPPORT_ERRORED = "couldn't reach solstone support"
 
-# T1.4 — active/queued job indicators (lowercase "sol" per system-anatomy canon)
+# T1.4 — active/queued job indicators
 CHAT_JOBS_INDICATOR_SINGULAR = "sol is running 1 job"
 CHAT_JOBS_INDICATOR_PLURAL_FORMAT = "sol is running {count} jobs"
 CHAT_QUEUE_DEPTH_CAP_MESSAGE = "Give sol a moment to catch up — you have 10 messages waiting."
@@ -55,7 +55,7 @@ CHAT_OFFER_SUPPORT_DECLINE = "Okay — I'll keep this local. Tell me if you'd li
 # support". Backend-only — no chat_copy.js twin; the C1 draft-review card renders
 # this as its lead line via the sol_message text.
 CHAT_SUPPORT_DRAFT_READY = "Here's the support request I put together — look it over before anything goes to solstone support."
-# Deterministic support-draft submit/cancel results. Brand: "solstone support".
+# Deterministic support-draft submit/cancel results.
 # Backend-only — no chat_copy.js twin.
 CHAT_SUPPORT_SUBMIT_FILED_FORMAT = "I sent that to solstone support as ticket #{ticket_id}."
 CHAT_SUPPORT_ATTACH_FILED_FORMAT = "I added that to solstone support ticket #{ticket_id}."
@@ -65,7 +65,7 @@ CHAT_SUPPORT_DRAFT_CANCELLED = "Okay — nothing was sent to solstone support."
 # Deterministic deferred-mode honest-degradation message (backend-emitted; rides
 # the sol_message/finish text when an otherwise-empty answer is really "captured
 # but not yet analyzed"). Backend-only — no chat_copy.js twin. Substance locked
-# (wording VPX-refinable). Copy-canon compliant: no surveillance verbs.
+# (wording refinable).
 CHAT_DEFERRED_NOT_ANALYZED = "Today's segments aren't analyzed yet — they'll process during your deferred window."
 CHAT_THINKING_ENGINE_NOT_CHOSEN = "no thinking engine is chosen yet. choose one in thinking so i can answer from your journal."
 # fmt: on

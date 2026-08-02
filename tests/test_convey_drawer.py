@@ -68,22 +68,16 @@ def test_drawer_js_contract_and_constraints():
     assert "aria-" not in source
 
 
-def test_drawer_owner_facing_region_is_empty_and_clean():
+def test_drawer_owner_facing_region_is_empty():
     source = (STATIC_ROOT / "drawer.js").read_text(encoding="utf-8")
     regions = _owner_regions(source)
-    banned = {"capture", "watch", "record", "monitor", "track", "collect", "user"}
 
     assert regions == ["  "]
-    for region in regions:
-        lowered = region.lower()
-        assert region == lowered
-        assert {word for word in banned if word in lowered} == set()
 
 
 def test_gate_drawer_js_contract_and_owner_facing_region():
     source = (STATIC_ROOT / "gate-drawer.js").read_text(encoding="utf-8")
     regions = _owner_regions(source)
-    banned = {"capture", "watch", "record", "monitor", "track", "collect", "user"}
     carried_strings = {"Manual tags:", "Segments with audio:", "Embeddings:"}
 
     assert "(function () {" in source
@@ -95,7 +89,6 @@ def test_gate_drawer_js_contract_and_owner_facing_region():
     assert "<b>" not in source
     assert "drawer-chip" not in source
     assert "next_generic" not in source
-    assert "tag more owner statements, then build from manual tags." not in source
     assert regions and len(regions) == 1
     assert "SPK_OVERVIEW_OWNER_COHESION_LABEL" in regions[0]
     assert "payload-key test" in regions[0]
@@ -108,12 +101,6 @@ def test_gate_drawer_js_contract_and_owner_facing_region():
     strings = re.findall(r"'([^']*)'", regions[0])
     assert strings
     assert carried_strings.issubset(strings)
-    for text in strings:
-        if text in carried_strings:
-            continue
-        assert text == text.lower()
-        lowered = text.lower()
-        assert {word for word in banned if word in lowered} == set()
 
 
 def test_drawer_css_has_no_generated_owner_text_or_user_select():

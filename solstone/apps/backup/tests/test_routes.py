@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -15,7 +14,6 @@ from unittest.mock import Mock
 import pytest
 
 from solstone.apps.backup import routes as backup_routes
-from solstone.apps.backup.copy import backup_copy_values
 from solstone.convey.config import DEFAULT_APP_ORDER
 from solstone.think.backup.destination import DestinationStatus
 from solstone.think.backup.hosted import (
@@ -1136,40 +1134,3 @@ def test_hosted_operation_uses_single_busy_slot(
     assert first.status_code == 202
     assert second.status_code == 503
     assert second.get_json()["reason_code"] == "backup_busy"
-
-
-def test_forbidden_terms_absent_from_backup_surfaces(backup_env, monkeypatch) -> None:
-    env = backup_env()
-    monkeypatch.setattr(backup_routes, "request_backup_now", Mock(return_value=False))
-    workspace = Path("solstone/apps/backup/workspace.html").read_text(encoding="utf-8")
-    js = Path("solstone/apps/backup/static/backup.js").read_text(encoding="utf-8")
-    status = env.client.get("/app/backup/status").get_json()
-    haystack = "\n".join(
-        [
-            workspace,
-            js,
-            "\n".join(backup_copy_values()),
-            json.dumps(status, sort_keys=True),
-        ]
-    ).lower()
-    forbidden = [
-        "activate",
-        "subscribe",
-        "sign up for",
-        "upgrade",
-        "log in",
-        "sign in",
-        "account",
-        "capture",
-        "watch",
-        "monitor",
-        "track",
-        "collect",
-    ]
-
-    hits = [
-        term for term in forbidden if re.search(rf"\b{re.escape(term)}\b", haystack)
-    ]
-
-    assert "recorded" in haystack
-    assert hits == []

@@ -444,13 +444,6 @@ def test_state_configured_agent_name_overrides_fallback(tmp_path, monkeypatch):
     assert state["agent_name"] == "Astra"
 
 
-def test_workspace_agent_fallback_copy_is_lowercase():
-    source = Path("solstone/apps/chat/workspace.html").read_text(encoding="utf-8")
-
-    assert "let agentName = 'sol';" in source
-    assert "agentName = String(state.agent_name || 'sol');" in source
-
-
 def test_state_today_unresolved_request_sets_open_id(journal_copy, monkeypatch):
     today = "20990102"
     _set_today(monkeypatch, today)

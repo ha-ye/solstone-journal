@@ -54,7 +54,6 @@ def test_facet_cards_empty_copy_uses_ent_constant(html):
         in html
     )
     assert "noEntities.textContent = ENT_COPY.ENT_CARDS_EMPTY;" in fn
-    assert "no entities added to this facet yet. star entities below" not in html
 
 
 def test_observation_empty_and_failure_states(html):
@@ -67,7 +66,6 @@ def test_observation_empty_and_failure_states(html):
         "renderObservationList(entity, detailObservationState.observations);" in detail
     )
     assert "ENT_COPY.ENT_OBS_EMPTY.replace('{name}', entity.name)" in observation_list
-    assert "'no observations yet.'" not in html
 
     assert (
         "const obsContainer = document.getElementById('detail-observations');"
@@ -79,7 +77,6 @@ def test_observation_empty_and_failure_states(html):
     assert "reportable: false" in catch_body
     assert "headingLevel: 'h3'" in catch_body
     assert "retryBtn.onclick = () => showFacetDetailView(entityId);" in catch_body
-    assert "loading..." not in catch_body
 
 
 def test_observation_day_grid_surface_and_state_hooks(html):
@@ -156,32 +153,6 @@ def test_entity_type_grouping_is_normalized_and_shared(html):
     assert "const type = entity.type || 'Other';" not in cards
     assert "orderedTypes" not in journal
     assert "orderedTypes" not in cards
-
-
-def test_entity_detail_type_badge_lowercases_without_js_munging(html):
-    css = _css_rule(html, ".entity-detail-type")
-
-    assert "text-transform: lowercase;" in css
-
-    assignment_lines = [
-        line.strip()
-        for line in html.splitlines()
-        if "document.getElementById('journal-detail-type').textContent =" in line
-        and "''" not in line
-    ]
-    assert (
-        "document.getElementById('journal-detail-type').textContent = entity.type;"
-        in assignment_lines
-    )
-    assert (
-        "document.getElementById('journal-detail-type').textContent = type;"
-        in assignment_lines
-    )
-    for line in assignment_lines:
-        assert ".toLowerCase()" not in line
-        assert ".toUpperCase()" not in line
-        assert "textTransform" not in line
-        assert "text-transform" not in line
 
 
 def test_connection_mounts_and_renderers_are_shared(html):

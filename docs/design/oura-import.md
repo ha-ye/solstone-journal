@@ -4,7 +4,7 @@
 - **Repo:** `solstone`, branch `health-imports-phase1`
 - **Companion skeleton:** `solstone/think/importers/oura.py` + `tests/test_oura_importer.py` + synthetic fixtures under `tests/fixtures/importers/health/oura_synthetic/` (landed with this doc; see §9)
 - **Hard rules honored:** no network code anywhere (a test greps the module for network-capable imports), no OAuth against real Oura, no live-journal writes, no credentials or token files, synthetic fixtures only. The first live OAuth authorization is **OWNER-PRESENT-ONLY** (§8, phase O2).
-- **Copy canon:** §13 of the repo guide. Oura's numbers render as attributed facts — "Readiness 82 · Oura's score" — never our gloss, never medical interpretation.
+- **Medical claims:** Oura's numbers render as attributed facts — "Readiness 82 · Oura's score" — never our gloss, never medical interpretation.
 
 Status note, 2026-07-12: this document records the original Oura lane design.
 Since then, owner-present Oura OAuth connect, journal-config token
@@ -65,9 +65,9 @@ Other API facts to verify live at O2: OAuth2 endpoints (`cloud.ouraring.com/oaut
 
 ## 3. (b) Presentation — day pages, new card, overview, window API
 
-All owner-facing strings follow §13: attributed facts, no surveillance verbs, no medical interpretation. The body app (`solstone/apps/body/`) is another agent's surface; this section is the spec it implements.
+Oura values render as attributed facts with no medical interpretation. The body app (`solstone/apps/body/`) is another agent's surface; this section is the spec it implements.
 
-### Copy rules (the whole §13/no-interpretation contract in one table)
+### Presentation rules
 
 | Do | Don't |
 |---|---|
@@ -415,9 +415,9 @@ reauthorization needed (the scopes were granted 2026-07-07).
 
 ## 10. What landed with this doc (phase O0 inventory)
 
-- `solstone/think/importers/oura.py` — parse layer (`parse_oura_bundle`, `parse_endpoint_document`, `parse_oura_day`), normalizer (`normalize_bundle` → rows + `HealthDedupeRecord`s via `health_schema`), §13 copy reference (`render_day_summary`), `OuraImporter` (detect/preview/dry-run live; save gated then seamed), `OuraSyncBackend` + OAuth seams. Network egress follows a lazy-import discipline: no module-level network imports, with live egress confined to the allowlisted transport path enforced by tests.
+- `solstone/think/importers/oura.py` — parse layer (`parse_oura_bundle`, `parse_endpoint_document`, `parse_oura_day`), normalizer (`normalize_bundle` → rows + `HealthDedupeRecord`s via `health_schema`), factual rendering (`render_day_summary`), `OuraImporter` (detect/preview/dry-run live; save gated then seamed), `OuraSyncBackend` + OAuth seams. Network egress follows a lazy-import discipline: no module-level network imports, with live egress confined to the allowlisted transport path enforced by tests.
 - `solstone/think/importers/health_schema.py` — `SOURCE_OURA_API`, `KNOWN_SOURCE_FAMILIES` entry, friendly names for the seven `oura.*` record types.
 - `solstone/think/importers/pre_save_gate.py` — `"oura"` joins `SENSITIVE_IMPORTERS`.
 - `solstone/think/importers/file_importer.py` — registry entry (preview/dry-run-only paths active).
 - `tests/fixtures/importers/health/oura_synthetic/` — six endpoint documents, API-page-shaped, arithmetic-consistent, fully synthetic.
-- `tests/test_oura_importer.py` — 30 tests: registration/gate membership, parse validation, normalization + dedupe-key stability and cross-family non-collision, JSONL round-trip, detect/preview/dry-run, gate enforcement (blocks before any write; approved runs still write nothing past the seam), §13 rendering, seam errors, no-network guard.
+- `tests/test_oura_importer.py` — 30 tests: registration/gate membership, parse validation, normalization + dedupe-key stability and cross-family non-collision, JSONL round-trip, detect/preview/dry-run, gate enforcement (blocks before any write; approved runs still write nothing past the seam), attributed factual rendering, seam errors, no-network guard.
