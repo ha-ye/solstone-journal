@@ -135,10 +135,14 @@ fn make_ci_never_executes_forbidden_interpreters() {
     let root = repo_root();
     let temp = TempDir::new("ci-gate-purity");
     let shim_dir = temp.path.join("shims");
+    let venv_dir = temp.path.join("venv");
+    let venv_bin = venv_dir.join("bin");
     let sentinel = temp.path.join("sentinel.log");
     fs::create_dir(&shim_dir).expect("create shim directory");
+    fs::create_dir_all(&venv_bin).expect("create poison virtualenv bin directory");
     for name in ["python", "python3", "pytest", "ruff", "uv"] {
         write_forbidden_shim(&shim_dir.join(name), &sentinel);
+        write_forbidden_shim(&venv_bin.join(name), &sentinel);
     }
 
     let path = format!(
@@ -148,6 +152,9 @@ fn make_ci_never_executes_forbidden_interpreters() {
     );
     let output = Command::new("make")
         .arg("ci")
+        .arg(format!("VENV={}", venv_dir.display()))
+        .arg(format!("VENV_BIN={}", venv_bin.display()))
+        .arg(format!("PYTHON={}", venv_bin.join("python").display()))
         .current_dir(root)
         .env("PATH", path)
         .env("SOLSTONE_CI_PURITY_REENTRY", "1")

@@ -133,8 +133,9 @@ retroactively provide `ORT_LIB_PATH` to `ort-sys`.
 ### Rust-Conversion Freeze
 
 The development gate is Rust-only for the duration of the conversion. The
-release rail—`release`, `release-test`, `release-checks`, `publish-release`, and
-`publish-release-test`—and `scripts/release.sh` itself are hard-frozen: every
+default `make` / `make all` target now aliases the native `make build` rail. The
+release rail (`release`, `release-test`, `release-checks`, `publish-release`, and
+`publish-release-test`) and `scripts/release.sh` itself are hard-frozen: every
 mode, including `--candidate`, `--recover`, and `--dry-run-linux`, fails
 immediately with a freeze diagnostic. The alternate Python test rails
 `test-cov`, `test-integration`, `test-release`, `test-performance`, `test-app`,
@@ -142,7 +143,7 @@ immediately with a freeze diagnostic. The alternate Python test rails
 lifts only when the Makefile and release script are changed again.
 
 `make audit` is unaffected and still runs its Python advisory validator.
-`make install-checks` and its roughly 45 Python-and-Rust sub-targets also remain
+`make install-checks` and its Python-and-Rust sub-targets also remain
 runnable directly, but `ci` and `verify` no longer reach them. The Python product
 and pytest suite are unchanged; they are simply no longer gated by `ci`.
 
