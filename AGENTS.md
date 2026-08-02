@@ -109,29 +109,27 @@ Verified against `Makefile`. Grouped by use.
 
 | Target | When to use |
 |--------|-------------|
-| `make format` | Auto-fix formatting and imports with ruff. Safe to run anytime; modifies files. |
-| `make format-check` | Format dry-run. Part of `make ci`; rarely run alone. |
-| `make test` | Full unit suite — `tests/` + every `solstone/apps/*/tests/`, one parallel run. Format-check runs first; failures block tests. |
-| `make test-cov` | Same suite with full-repo terminal coverage; used by `make verify`. |
-| `make test-integration` | Opt-in real local build/process and persisted-index contracts. Never part of `make ci`. |
-| `make test-release` | Serial release transaction, entrypoint, packaging, and release-host tool-contract tests. Never part of development `make ci`. |
-| `make release-checks` | Full release-host gate: `test-release`, advisory-policy liveness, and real minisign signing. Candidate construction runs this automatically. |
-| `make test-app APP=<name>` | Run a single app's tests (focus helper). |
-| `make test-only TEST=<path-or-pattern>` | Run a specific test file or pytest node id (`TEST="-k test_name"` also works). |
-| `make coverage` | HTML coverage report under `htmlcov/`. Occasional. |
-| `make watch` | pytest-watch — reruns tests on file change. Useful during a test-heavy sprint. |
-| `make ci` | Install checks plus the full unit suite. Canonical final-tree gate before merge or release. |
-| `make verify` | Install checks plus the coverage suite. Use when coverage is specifically required. |
-| `make install-checks` | The pre-test half of `make ci` (format-check + ruff + layer-hygiene). Called by `ci` / `verify`. |
+| `make format` | Format the Rust workspace with Cargo fmt; modifies Rust source. |
+| `make format-check` | Cargo fmt dry-run (`cargo fmt --all -- --check`); one of the Rust-only CI checks. |
+| `make test` | Alias for `make check-rust-test`: Rust workspace tests only, excluding the ONNX crate pair from host coverage. |
+| `make test-cov` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make test-integration` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make test-release` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make release-checks` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make test-performance` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make test-app APP=<name>` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make test-only TEST=<path-or-pattern>` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make coverage` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make watch` | Frozen for the Rust-conversion effort; fails immediately. See `docs/PORTING.md#rust-conversion-freeze`. |
+| `make ci` | Rust-only gate: `check-rust-fmt`, MSRV, clippy, Rust tests, iOS canary, and Rust dependency policy. |
+| `make verify` | Alias for `make ci` during the Rust-conversion freeze. |
+| `make install-checks` | Directly runnable full Python-and-Rust preflight chain (format, ruff, layer hygiene, and related checks); no longer called by `ci` or `verify`. |
 | `make check-layer-hygiene` | Run `scripts/check_layer_hygiene.py` alone. Useful when iterating on an L1–L2 violation flagged by CI. |
 
-During development, use the narrowest checks that prove the changed behavior:
-`make test-only`, `make test-app`, and specific `make check-*` targets. Run
-`make ci` once on the settled final tree before merge or release. Run it
-earlier only for changes to CI/test infrastructure, shared fixtures, packaging
-or dependencies, broad cross-cutting contracts, or when a clean baseline is
-necessary to diagnose the task. Do not rerun an unchanged failure merely to
-seek green.
+During the Rust-conversion freeze, use the narrowest applicable
+`make check-rust-*` target, then `make ci` as the settled Rust gate. The focused
+Python Make targets are frozen; run the Python suite directly when it is needed.
+Do not rerun an unchanged failure merely to seek green.
 
 ### Verification against a running sandbox
 
@@ -156,6 +154,11 @@ seek green.
 | `make versions` | Print versions of Python, uv, and key deps. Diagnostic. |
 
 ### Release rail
+
+> **Rust-conversion freeze:** this entire rail is currently inert. `scripts/release.sh`
+> refuses unconditionally in every mode before any behavior described below can
+> run; the Make release targets fail immediately too. See
+> `docs/PORTING.md#rust-conversion-freeze`.
 
 DESTRUCTIVE: `bash scripts/release.sh --candidate` is fresh construction; before
 policy or build work it first runs `make release-checks`, then deletes prior raw
@@ -248,7 +251,10 @@ or hosted-release seam is reached. Do not add publication behavior to this
 candidate rail.
 
 Transparency publication is the separate retryable evidence step after delivery;
-it never gates delivery. `make publish-transparency
+it never gates delivery. It is soft-gated while inactive: set
+`TRANSPARENCY_ACTIVATED=1` (or `make TRANSPARENCY_ACTIVATED=1 <target>`) to reach
+the real implementation; see `docs/PORTING.md#rust-conversion-freeze`.
+`make publish-transparency
 RELEASE_DIR=<retained ready dir>` is env-driven: operator endpoints, bucket,
 credentials, minisign key paths, and archive channel come from
 `TRANSPARENCY_*` env vars, while the public base defaults to
@@ -307,11 +313,9 @@ sets only the local verification path and may use any local filename.
 
 ## 6. Testing quickstart
 
-- **Framework:** pytest. Files `test_*.py`, functions `test_*`. Shared fixtures in `tests/conftest.py`.
-- **Fixture journal:** `tests/fixtures/journal/` — immutable mock input with facets, entities, segments, and index state. The autouse `set_test_journal_path` fixture in `tests/conftest.py` points unit tests at it. Tests that write, scan, or rebuild journal/index state must use `journal_copy` or a smaller `tmp_path` journal (see §8).
-- **Run one test:** `make test-only TEST=tests/test_utils.py::test_foo` or `TEST="-k test_foo"`. **One app:** `make test-app APP=<name>`.
-- **`make test` runs everything** — `tests/` and every `solstone/apps/*/tests/` in one parallel run. App tests are not a separate step.
-- **`make test` / `make ci` are strict unit/component rails** — mock process, thread, clock, network, and repository boundaries; no real browser, live network, API keys, heavyweight builds, or writes to shared fixture state. Real local build/process and persisted-index contracts use `@pytest.mark.integration` and run only through `make test-integration`. Release transactions and release-host contracts use `@pytest.mark.release`, run serially through `make test-release`, and join the real release-host gates under `make release-checks`. Live product verification uses `make sandbox`.
+- **Rust gate:** `make ci`, `make test`, `make verify`, and `make build` operate only on the native `core/` Cargo workspace during the Rust-conversion freeze. `make ci` runs formatting, MSRV, clippy, Rust tests, the iOS canary, and Rust dependency policy.
+- **Python suite:** pytest files remain `test_*.py` with `test_*` functions, shared fixtures in `tests/conftest.py`, and the fixture journal at `tests/fixtures/journal/`. The autouse `set_test_journal_path` fixture is unchanged; tests that write, scan, or rebuild journal/index state must use `journal_copy` or a smaller `tmp_path` journal (see §8). Run this suite directly with bare `pytest` when needed. `tests/` and `solstone/apps/*/tests/` are unchanged, but the former Python Make rails—including `make test-app`, `make test-only`, and the other `make test-*` targets—now fail with the freeze diagnostic.
+- **Marked Python tests:** integration, performance, and release tests remain in the suite and can be selected with bare pytest as needed; their former Make rails are frozen. Live product verification still uses `make sandbox`.
 - **After editing `solstone/convey/` or `solstone/apps/`:** `journal restart-convey` to reload code in a running stack.
 - **`make dev` + `make sandbox`** both write runtime artifacts into the fixtures journal; `tests/fixtures/journal/.gitignore` covers those — never commit them.
 - **Test invariants, not snapshots.** A test asserts what must hold in *every* valid state of the system — not what happens to be true today. Never pin a test to hand-edited prose (CHANGELOG / README / docs), to a value the system is *designed* to change (a version, a date, a growing count), or to a transient state. The tell: if doing the correct next thing — cut a release, rename a label, graduate a shipped changelog entry — turns the test red, the test is wrong, not the system. And test the code that *produces* a fact, never the rendered text about it. (A `[Unreleased]`-pinned changelog test was exactly this anti-pattern — its pass condition required the release process to *not* run; removed 2026-05-30.)

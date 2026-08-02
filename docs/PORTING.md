@@ -92,32 +92,30 @@ for the helper release lanes.
 | Evidence | Repository command | Class | Notes |
 |----------|--------------------|-------|-------|
 | Rust formatting | `make check-rust-fmt` | GNU-host check | Host source-format evidence only. |
-| Rust MSRV | `make check-rust-msrv` | GNU-host check | Verifies the pinned MSRV rail without changing `rust-version`. |
-| Rust lint | `make check-rust-clippy` | GNU-host check | Runs the existing clippy `-D warnings` gate. |
-| Rust tests | `make check-rust-test` | GNU-host check | Runs workspace Rust tests on the GNU host. |
+| Rust MSRV | `make check-rust-msrv` | GNU-host check | Verifies the pinned MSRV rail without changing `rust-version`; excludes `solstone-core-speakers-analyze` and `solstone-core-speakers-onnx` from host coverage and invokes no Python. |
+| Rust lint | `make check-rust-clippy` | GNU-host check | Runs clippy with `-D warnings`; excludes `solstone-core-speakers-analyze` and `solstone-core-speakers-onnx` from host coverage and invokes no Python. |
+| Rust tests | `make check-rust-test` | GNU-host check | Runs workspace Rust tests on the GNU host, excluding `solstone-core-speakers-analyze` and `solstone-core-speakers-onnx`; invokes no Python. |
 | Rust dependency policy | `make check-rust-deny` | GNU-host check | Locked, offline bans/licenses/sources policy over the supported cargo-deny graph. |
 | SPL dependency pin | `make check-spl-dependency-pin` | GNU-host check | Verifies the Rust core workspace resolves `spl-core` and `spl-transport` only through the workspace-owned `spl-rust` tag pin, with member manifests inheriting it, lockfile binding intact, and local patch/source replacement routes rejected. |
 | Rust advisories | `make audit` | GNU-host check | Verifies a signed advisory mirror packet, materializes its bundle locally, then performs a locked offline advisory check without refreshing or mutating the operator inputs. |
 | iOS canary | `make check-rust-ios` | iOS cross-target canary | Cross-target drift evidence for eligible library crates; explicitly excludes `solstone-core-indexer-store` because the native SQLite store is not yet in the iOS gate, and `solstone-core-speakers-analyze` plus `solstone-core-speakers-onnx` because the analyzer transitively depends on ONNX Runtime host-only native linkage. |
 | Core sdist compile inputs | `make check-core-sdist-compile-inputs` | Packaging-source check | Verifies shipping Rust compile-time inputs are discovered and covered by the normalized `solstone-core` sdist injection set. |
-| Release candidate rail | `scripts/release.sh --candidate` / `scripts/release.sh --recover <version> <source-commit>` | Local readiness evidence | DESTRUCTIVE: `--candidate` is fresh construction; before policy or build work it deletes prior raw build/dist outputs and that version's stale payload/evidence. It binds candidate payload, ledger, and per-target install/smoke proofs, then reports canonical local readiness JSON. `--recover` is retained-byte-only, read-only validation; it preserves retained payload, ledger, and proofs and never rebuilds or refreshes. Proofs cover local candidate bytes and native smoke only; publication is temporarily locked out of this rail. |
+| Release candidate rail | `scripts/release.sh --candidate` / `scripts/release.sh --recover <version> <source-commit>` | Frozen | During the Rust-conversion freeze, the script refuses unconditionally before producing any evidence. |
 
 ### Rust ONNX Runtime Provisioning
 
 `solstone-core-speakers-onnx` links dynamically to the ONNX Runtime C API from
 the journal Python environment. It does not download or vendor ONNX Runtime and
-does not read paths from inside the crate. Host Rust workspace compile checks
-that build the ONNX crate (`make check-rust-msrv`, `make check-rust-clippy`, and
-`make check-rust-test`) run Cargo through `scripts/resolve_onnxruntime_capi.py`,
-which imports the Python module `onnxruntime` using `.venv/bin/python`; this
-works whether the installed distribution is `onnxruntime` or `onnxruntime-gpu`.
-Using the resolver for MSRV and clippy is a deliberate consistency and
-early-failure choice, not a compile necessity: `cargo check` and clippy do not
-link, so they could otherwise pass through `ort-sys`' deferred `cfg(link_error)`
-path when no ONNX Runtime location is configured. The repository gates instead
-lint and check the real dynamic-link configuration, so provisioning problems fail
-uniformly before the `check-rust-test` link step. The consequence is that these
-workspace build and lint gates require the journal venv.
+does not read paths from inside the crate. The host Rust commands
+`make check-rust-msrv`, `make check-rust-clippy`, `make check-rust-test`, and
+`make build` exclude `solstone-core-speakers-analyze` and
+`solstone-core-speakers-onnx` through `RUST_HOST_EXCLUDES`, so they require no
+ONNX Runtime or Python provisioning. The frozen `ci`/`build`/`test` path does not
+invoke `scripts/resolve_onnxruntime_capi.py`. That resolver remains in the
+repository and has dedicated Python tests, but no current Makefile recipe invokes
+it. `wheel-speakers-analyze-linux-x86_64`,
+`wheel-speakers-analyze-linux-aarch64`, and `wheel-macos` build the analyzer for
+distribution by staging the runtime and setting `ORT_LIB_PATH` directly.
 
 The resolver stages symlinks, never copies, under
 `core/target/onnxruntime-link/<platform>/lib/`. Linux stages
@@ -131,6 +129,32 @@ Direct `cargo test --manifest-path core/Cargo.toml --workspace` without the
 resolver is unsupported for the ONNX crate because Cargo dependency build
 scripts run before dependent crate build scripts. A crate `build.rs` cannot
 retroactively provide `ORT_LIB_PATH` to `ort-sys`.
+
+### Rust-Conversion Freeze
+
+The development gate is Rust-only for the duration of the conversion. The
+release rail—`release`, `release-test`, `release-checks`, `publish-release`, and
+`publish-release-test`—and `scripts/release.sh` itself are hard-frozen: every
+mode, including `--candidate`, `--recover`, and `--dry-run-linux`, fails
+immediately with a freeze diagnostic. The alternate Python test rails
+`test-cov`, `test-integration`, `test-release`, `test-performance`, `test-app`,
+`test-only`, `watch`, and `coverage` do the same. There is no bypass; this freeze
+lifts only when the Makefile and release script are changed again.
+
+`make audit` is unaffected and still runs its Python advisory validator.
+`make install-checks` and its roughly 45 Python-and-Rust sub-targets also remain
+runnable directly, but `ci` and `verify` no longer reach them. The Python product
+and pytest suite are unchanged; they are simply no longer gated by `ci`.
+
+Transparency is intentionally different: `TRANSPARENCY_ACTIVATED ?= 0` is
+exported by the Makefile and is checked inactive by default. It soft-gates
+`check-transparency-minisign`, `publish-transparency`, and
+`resign-transparency-pointer` through Makefile `ifeq` branches, as well as the
+direct `scripts/transparency_publish.py` CLI entrypoint. Set
+`TRANSPARENCY_ACTIVATED=1` in the environment or invoke
+`make TRANSPARENCY_ACTIVATED=1 <target>` to reach the real implementation. Unlike
+the hard-frozen release rail, this transparency gate is reversible without a
+code change.
 
 ### Signed Advisory Mirror Audit
 
