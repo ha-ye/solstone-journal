@@ -1133,7 +1133,7 @@ dependencies = [
 [[package]]
 name = "spl-core"
 version = "0.1.0"
-source = "git+https://github.com/solpbc/spl-rust?tag=v0.4.2#755876568fb3bdd165abdee37c45c22f905247cc"
+source = "git+https://github.com/solpbc/spl-rust?tag=v0.4.3#755876568fb3bdd165abdee37c45c22f905247cc"
 dependencies = [
  "base64",
  "hkdf",
@@ -1146,7 +1146,7 @@ dependencies = [
 [[package]]
 name = "spl-transport"
 version = "0.1.0"
-source = "git+https://github.com/solpbc/spl-rust?tag=v0.4.2#755876568fb3bdd165abdee37c45c22f905247cc"
+source = "git+https://github.com/solpbc/spl-rust?tag=v0.4.3#755876568fb3bdd165abdee37c45c22f905247cc"
 dependencies = [
  "base64",
  "futures-util",
