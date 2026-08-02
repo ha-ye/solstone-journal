@@ -2173,4 +2173,11 @@ def main(
 
 
 if __name__ == "__main__":
+    if os.environ.get("TRANSPARENCY_ACTIVATED", "0") != "1":
+        print(
+            "scripts/transparency_publish.py: transparency rail inactive; "
+            "set TRANSPARENCY_ACTIVATED=1 to restore (see docs/PORTING.md)",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     raise SystemExit(main())
