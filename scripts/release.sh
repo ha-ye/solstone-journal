@@ -51,6 +51,9 @@
 
 set -euo pipefail
 
+echo "scripts/release.sh: frozen for the Rust-conversion effort (development gate is Rust-only; see docs/PORTING.md)" >&2
+exit 1
+
 PUBLISH_LOCKOUT_MESSAGE="publishing is handled by scripts/release_publish.py; run make publish-release RELEASE_DIR=dist/release-candidate/<version>/ or make publish-release-test RELEASE_DIR=dist/release-candidate/<version>/"
 
 usage() {
